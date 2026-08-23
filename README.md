@@ -141,9 +141,22 @@ el camino Worker → Core. Para localizarlo:
 
 **1. ¿Llega el Bridge al Core?**
 
-```bat
-curl -X POST http://localhost:8088/api/v1/core-ping ^
+En PowerShell (`curl` a secas es un alias de `Invoke-WebRequest` y no acepta
+`-H` ni `-d`; hay que llamar al binario real con `curl.exe`):
+
+```powershell
+curl.exe -X POST http://localhost:8088/api/v1/core-ping `
   -H "X-API-Key: TU_BRIDGE_API_KEY" -d "{}"
+```
+
+O con el cmdlet nativo:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8088/api/v1/core-ping" `
+  -Method POST `
+  -Headers @{ "X-API-Key" = "TU_BRIDGE_API_KEY" } `
+  -ContentType "application/json" `
+  -Body "{}" | ConvertTo-Json
 ```
 
 Devuelve el status y el cuerpo exactos del Core:
@@ -153,17 +166,45 @@ Devuelve el status y el cuerpo exactos del Core:
 | `ConnectError` / `ConnectTimeout` | El Core no es alcanzable: DNS, firewall o TLS. Si la máquina sale por proxy, `CORE_HTTP_TRUST_ENV=true`. |
 | `401` / `403` | `CORE_API_KEY` no coincide con la que espera el Core. |
 | `404` | `CORE_EVENTS_URL` apunta a una ruta que no existe. |
-| `2xx` | El transporte va bien → sigue en el paso 2. |
+| `2xx` con `core_rejection` | El Core recibe y **descarta**. Ver abajo. |
+| `2xx` y `"ok": true` | El canal entero funciona → sigue en el paso 2. |
+
+**Ojo con el 2xx que no procesa.** El Core responde `200` aunque tire el
+evento:
+
+```json
+{"ok":true,"recibidos":1,"procesados":0,
+ "detalle":[{"i":0,"type":"connection.status","ok":false,"error":"cuenta desconocida"}]}
+```
+
+Con el `account_id` de prueba eso es lo normal. Repite el ping con el
+**account_id real** que el Core mandó en `/accounts/connect`:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8088/api/v1/core-ping" `
+  -Method POST `
+  -Headers @{ "X-API-Key" = "TU_BRIDGE_API_KEY" } `
+  -ContentType "application/json" `
+  -Body '{"account_id":"EL-UUID-REAL","mt5_login":12345678}' | ConvertTo-Json -Depth 5
+```
+
+Si con el id real sigue diciendo `cuenta desconocida`, el Core no reconoce el
+mismo id que él envía al conectar: ahí está la causa de que no carguen los
+stats, y se arregla en el Core, no en el Bridge. El Bridge ya no da esos
+descartes por buenos — los cuenta en `emit.rejected` y los deja en
+`last_error`.
 
 **2. ¿Está emitiendo el Worker?**
 
-```bat
-curl http://localhost:8088/api/v1/slots/Slot-01 -H "X-API-Key: TU_BRIDGE_API_KEY"
+```powershell
+curl.exe http://localhost:8088/api/v1/slots/Slot-01 -H "X-API-Key: TU_BRIDGE_API_KEY"
 ```
 
 El bloque `emit` dice lo que pasa con cada POST al Core:
 
-- `sent: 0` y `last_error` con texto → el Core rechaza los eventos.
+- `sent: 0`, `rejected > 0` y `last_error` con el motivo del Core → llega
+  pero se descarta (el caso de `cuenta desconocida`).
+- `sent: 0`, `failed > 0` → los eventos no llegan siquiera (red, clave, ruta).
 - `last_snapshot_at` reciente y `last_status: 200` → el Bridge sí está
   mandando los stats; entonces el fallo está en **cómo el Core mapea `data`**
   de `account.snapshot`.
