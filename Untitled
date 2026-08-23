@@ -1,0 +1,8 @@
+$body = @{ account_id = "Slot-01" } | ConvertTo-Json
+# o el UUID del Core
+Invoke-RestMethod `
+  -Uri "http://localhost:8088/api/v1/accounts/disconnect" `
+  -Method POST `
+  -Headers @{ "X-API-Key" = "TU_BRIDGE_API_KEY" } `
+  -ContentType "application/json" `
+  -Body $body

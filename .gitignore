@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+data/
+.pytest_cache/
+.mypy_cache/
+
+# Terminales portables (binarios grandes). Se versiona solo el marcador.
+terminals/Slot-*/**
+!terminals/Slot-*/.gitkeep
+!terminals/README.md
+
+slot_runtime.json
+worker_state.json
