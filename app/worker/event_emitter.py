@@ -119,7 +119,7 @@ class EventEmitter:
         (ver `core_rejection`). Esos descartes ya quedan contabilizados en
         `_post_once`, así que aquí solo se registra lo que ni siquiera llegó.
         """
-        payload = event.model_dump()
+        payload = event.to_payload()
         last_problem = "sin intentos"
         for attempt in range(1, self._max_attempts + 1):
             outcome, last_problem, delivered = self._post_once(event.event, payload)

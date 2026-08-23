@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -161,3 +163,24 @@ def test_respuesta_sin_contrato_conocido_se_da_por_buena() -> None:
     assert core_rejection('{"ok":false,"error":"firma inválida"}') == "firma inválida"
     assert core_rejection('{"recibidos":3,"procesados":0}') == "recibidos=3 procesados=0"
     assert core_rejection('{"recibidos":3,"procesados":3}') is None
+
+
+def test_sobre_del_evento_lleva_la_cuenta_en_las_dos_grafias() -> None:
+    """Un Core que lee `accountId` no debe ver null en un sobre snake_case."""
+    payload = _event().to_payload()
+    assert payload["account_id"] == payload["accountId"] == "acc-1"
+    assert payload["mt5_login"] == payload["login"] == 123
+
+
+def test_lo_que_viaja_por_el_cable_incluye_ambas_grafias() -> None:
+    enviado: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        enviado.update(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "recibidos": 1, "procesados": 1})
+
+    emitter, _ = _emitter(handler)
+    assert emitter.emit(_event()) is True
+    assert enviado["accountId"] == "acc-1"
+    assert enviado["account_id"] == "acc-1"
+    assert enviado["event"] == "account.snapshot"
