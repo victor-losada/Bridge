@@ -100,6 +100,19 @@ class BridgeEvent(BaseModel):
     timestamp: str
     data: dict[str, Any] = Field(default_factory=dict)
 
+    def to_payload(self) -> dict[str, Any]:
+        """Sobre del evento con las claves en las dos grafías.
+
+        Un Core que resuelve la cuenta leyendo `accountId` obtiene null de un
+        sobre en snake_case y descarta el evento con "cuenta desconocida",
+        respondiendo 200. Mandar ambas quita esa ambigüedad; es la misma razón
+        por la que `data` viaja duplicado.
+        """
+        payload = self.model_dump()
+        payload["accountId"] = self.account_id
+        payload["login"] = self.mt5_login
+        return payload
+
     @classmethod
     def make(
         cls,

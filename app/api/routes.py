@@ -162,7 +162,7 @@ async def core_ping(request: Request) -> dict:
         ) as client:
             response = await client.post(
                 settings.core_events_url,
-                json=event.model_dump(),
+                json=event.to_payload(),
                 headers={
                     "Content-Type": "application/json",
                     "X-API-Key": settings.core_api_key,
