@@ -141,9 +141,22 @@ el camino Worker → Core. Para localizarlo:
 
 **1. ¿Llega el Bridge al Core?**
 
-```bat
-curl -X POST http://localhost:8088/api/v1/core-ping ^
+En PowerShell (`curl` a secas es un alias de `Invoke-WebRequest` y no acepta
+`-H` ni `-d`; hay que llamar al binario real con `curl.exe`):
+
+```powershell
+curl.exe -X POST http://localhost:8088/api/v1/core-ping `
   -H "X-API-Key: TU_BRIDGE_API_KEY" -d "{}"
+```
+
+O con el cmdlet nativo:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8088/api/v1/core-ping" `
+  -Method POST `
+  -Headers @{ "X-API-Key" = "TU_BRIDGE_API_KEY" } `
+  -ContentType "application/json" `
+  -Body "{}" | ConvertTo-Json
 ```
 
 Devuelve el status y el cuerpo exactos del Core:
@@ -157,8 +170,8 @@ Devuelve el status y el cuerpo exactos del Core:
 
 **2. ¿Está emitiendo el Worker?**
 
-```bat
-curl http://localhost:8088/api/v1/slots/Slot-01 -H "X-API-Key: TU_BRIDGE_API_KEY"
+```powershell
+curl.exe http://localhost:8088/api/v1/slots/Slot-01 -H "X-API-Key: TU_BRIDGE_API_KEY"
 ```
 
 El bloque `emit` dice lo que pasa con cada POST al Core:
