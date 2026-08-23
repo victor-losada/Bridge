@@ -35,6 +35,9 @@ class SlotState(BaseModel):
     last_error: str | None = None
     restart_count: int = 0
     updated_at: datetime = Field(default_factory=utc_now)
+    # Canal Worker → Core (lo publica el Worker en slot_runtime.json).
+    # Sin esto, un Core que rechaza los eventos es invisible desde la API.
+    emit: dict[str, Any] = Field(default_factory=dict)
 
     def touch(self) -> None:
         self.updated_at = utc_now()
@@ -53,6 +56,7 @@ class SlotState(BaseModel):
             "last_error": self.last_error,
             "restart_count": self.restart_count,
             "updated_at": self.updated_at.isoformat(),
+            "emit": self.emit,
         }
 
     def reset_assignment(self) -> None:
@@ -65,4 +69,5 @@ class SlotState(BaseModel):
         self.terminal_pid = None
         self.last_error = None
         self.restart_count = 0
+        self.emit = {}
         self.touch()

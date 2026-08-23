@@ -24,8 +24,26 @@ from app.security.credentials import CredentialCipher
 logger = logging.getLogger(__name__)
 
 
+_CORE_CHANNEL_PREFIX = "el Core no acepta eventos: "
+
+
 class SlotManagerError(RuntimeError):
     pass
+
+
+def _core_channel_error(emit: dict, current: str | None) -> str | None:
+    """Estado del canal hacia el Core; se limpia solo cuando vuelve a entregar.
+
+    Las marcas de tiempo son ISO-8601 UTC de ancho fijo, así que comparar
+    cadenas equivale a comparar instantes.
+    """
+    error_at = emit.get("last_error_at")
+    ok_at = emit.get("last_ok_at")
+    if emit.get("last_error") and error_at and (not ok_at or error_at > ok_at):
+        return f"{_CORE_CHANNEL_PREFIX}{emit['last_error']}"
+    if current and current.startswith(_CORE_CHANNEL_PREFIX):
+        return None
+    return current
 
 
 class SlotManager:
@@ -173,15 +191,15 @@ class SlotManager:
         state.status = SlotStatus.CONNECTING
         state.touch()
 
-    def _read_runtime_status(self, slot_id: str) -> str | None:
+    def _read_runtime(self, slot_id: str) -> dict:
         path = self.slot_dir(slot_id) / "slot_runtime.json"
         if not path.is_file():
-            return None
+            return {}
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            return str(payload.get("status") or "") or None
+            return payload if isinstance(payload, dict) else {}
         except Exception:
-            return None
+            return {}
 
     async def _watch_workers(self) -> None:
         """Si el Worker muere y la cuenta sigue asignada, reintento limitado."""
@@ -194,7 +212,16 @@ class SlotManager:
                         continue
                     running = self.proc.is_running(state.slot_id)
                     if running:
-                        runtime = self._read_runtime_status(state.slot_id)
+                        payload = self._read_runtime(state.slot_id)
+                        runtime = str(payload.get("status") or "") or None
+                        emit = payload.get("emit")
+                        if isinstance(emit, dict):
+                            state.emit = emit
+                            # Un fallo de entrega al Core no mata el worker,
+                            # pero sí explica "conecta y no cargan datos".
+                            state.last_error = _core_channel_error(
+                                emit, state.last_error
+                            )
                         if runtime == "connected":
                             state.status = SlotStatus.CONNECTED
                         elif runtime == "error":

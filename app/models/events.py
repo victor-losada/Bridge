@@ -18,8 +18,21 @@ class ConnectionStatusData(BaseModel):
     slot_id: str
     message: str | None = None
 
+    def to_payload(self) -> dict[str, Any]:
+        """snake_case + camelCase: el Core puede leer cualquiera de las dos."""
+        data = self.model_dump()
+        data["slotId"] = self.slot_id
+        return data
+
 
 class AccountSnapshotData(BaseModel):
+    """Stats de la cuenta.
+
+    Histórico: este evento salía en snake_case mientras `position.*` y
+    `trade.closed` ya viajaban en camelCase. `to_payload()` emite AMBAS
+    grafías para que el Core mapee los stats sea cual sea la que espere.
+    """
+
     balance: float
     equity: float
     margin: float
@@ -30,6 +43,12 @@ class AccountSnapshotData(BaseModel):
     leverage: int
     name: str | None = None
     server: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        data = self.model_dump()
+        data["freeMargin"] = self.free_margin
+        data["marginLevel"] = self.margin_level
+        return data
 
 
 class PositionData(BaseModel):

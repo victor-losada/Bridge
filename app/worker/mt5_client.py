@@ -78,9 +78,15 @@ class AccountSnapshot:
 
 
 class MT5Client:
-    def __init__(self, terminal_path: Path, timeout_ms: int = 60_000) -> None:
+    def __init__(
+        self,
+        terminal_path: Path,
+        timeout_ms: int = 60_000,
+        history_forward_buffer_hours: float = 24.0,
+    ) -> None:
         self.terminal_path = Path(terminal_path)
         self.timeout_ms = timeout_ms
+        self.history_forward_buffer_hours = history_forward_buffer_hours
         self._connected = False
 
     @property
@@ -238,9 +244,19 @@ class MT5Client:
         return out
 
     def history_deals(self, lookback_days: int) -> Sequence[Any]:
+        """Deals del lookback.
+
+        El rango se compara contra la hora del SERVIDOR del bróker, no contra
+        UTC. Con un bróker en EET (UTC+2/+3) un tope en `utc_now()` deja fuera
+        los cierres de las últimas horas y esos trade.closed no llegan nunca al
+        Core. Por eso el tope va con holgura hacia delante; los duplicados los
+        filtra el DealMatcher por ticket.
+        """
         self._ensure()
-        date_to = utc_now() + timedelta(minutes=5)
-        date_from = date_to - timedelta(days=lookback_days)
+        now = utc_now()
+        buffer = timedelta(hours=self.history_forward_buffer_hours)
+        date_from = now - timedelta(days=lookback_days) - buffer
+        date_to = now + buffer
         deals = mt5.history_deals_get(date_from, date_to)
         if deals is None:
             err = mt5.last_error()

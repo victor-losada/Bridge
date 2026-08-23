@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.config import Settings, get_settings
 from app.manager.slot_manager import SlotManager, SlotManagerError
 from app.models.commands import ConnectAccountRequest, DisconnectAccountRequest
+from app.models.events import BridgeEvent, ConnectionStatusData
+from app.utils import to_iso_z
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -107,6 +110,86 @@ async def restart_slot(slot_id: str, request: Request) -> dict:
     except SlotManagerError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "slot": state.public_dict()}
+
+
+@router.post("/core-ping", dependencies=[Depends(require_key)])
+async def core_ping(request: Request) -> dict:
+    """Comprueba el canal Bridge → Core con un evento real de prueba.
+
+    Responde con el status y el cuerpo EXACTOS que devuelve el Core. Es el
+    primer paso cuando una cuenta "conecta" pero no llegan datos:
+
+      - error de red/TLS  → el Worker tampoco puede emitir (proxy, firewall).
+      - 401/403           → CORE_API_KEY no coincide con la del Core.
+      - 404               → CORE_EVENTS_URL apunta a una ruta que no existe.
+      - 2xx               → el transporte va bien; el problema es el mapeo
+                            de `data` en el Core.
+
+    Emite `connection.status` (nunca stats falsos), así que no ensucia datos.
+    """
+    settings = get_settings()
+    mgr = _manager(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    account_id = str(body.get("account_id") or "bridge-core-ping")
+
+    slot_id = "Slot-00"
+    state = mgr.find_by_account(account_id)
+    if state is not None:
+        slot_id = state.slot_id
+
+    event = BridgeEvent.make(
+        event="connection.status",
+        account_id=account_id,
+        mt5_login=int(body.get("mt5_login") or 0),
+        timestamp=to_iso_z(),
+        data=ConnectionStatusData(
+            status="connecting",
+            slot_id=slot_id,
+            message="core-ping del Bridge (diagnóstico, no es una conexión real)",
+        ).to_payload(),
+    )
+
+    result: dict = {"core_events_url": settings.core_events_url, "ok": False}
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0, trust_env=settings.core_http_trust_env
+        ) as client:
+            response = await client.post(
+                settings.core_events_url,
+                json=event.model_dump(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": settings.core_api_key,
+                    "Authorization": f"Bearer {settings.core_api_key}",
+                },
+            )
+    except httpx.HTTPError as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["hint"] = (
+            "El Core no es alcanzable desde esta máquina. Revisa DNS, firewall, "
+            "certificado TLS o pon CORE_HTTP_TRUST_ENV=true si hay proxy."
+        )
+        logger.error("core-ping falló: %s", result["error"])
+        return result
+
+    result["status_code"] = response.status_code
+    result["response_body"] = response.text[:1000]
+    result["ok"] = response.status_code < 400
+    if response.status_code in (401, 403):
+        result["hint"] = "CORE_API_KEY no coincide con la clave que espera el Core."
+    elif response.status_code == 404:
+        result["hint"] = "CORE_EVENTS_URL no existe en el Core (revisa la ruta)."
+    elif result["ok"]:
+        result["hint"] = (
+            "Transporte OK: el Core acepta eventos. Si aun así no cargan los "
+            "stats, el fallo está en cómo el Core mapea el campo `data` de "
+            "account.snapshot."
+        )
+    logger.info("core-ping status=%s", response.status_code)
+    return result
 
 
 @router.post("/debug/events", dependencies=[Depends(require_core_or_bridge_key)])
