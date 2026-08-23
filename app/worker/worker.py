@@ -64,6 +64,9 @@ class Worker:
         mt5_init_timeout_ms: int = 60_000,
         login_retry_max: int = 4,
         login_retry_backoff_sec: float = 8.0,
+        core_retry_max: int = 3,
+        core_trust_env: bool = False,
+        history_forward_buffer_hours: float = 24.0,
     ) -> None:
         self.slot_id = slot_id
         self.account_id = account_id
@@ -79,8 +82,17 @@ class Worker:
         self.login_retry_max = login_retry_max
         self.login_retry_backoff_sec = login_retry_backoff_sec
 
-        self.client = MT5Client(self.terminal_path, timeout_ms=mt5_init_timeout_ms)
-        self.emitter = EventEmitter(core_events_url, core_api_key)
+        self.client = MT5Client(
+            self.terminal_path,
+            timeout_ms=mt5_init_timeout_ms,
+            history_forward_buffer_hours=history_forward_buffer_hours,
+        )
+        self.emitter = EventEmitter(
+            core_events_url,
+            core_api_key,
+            max_attempts=core_retry_max,
+            trust_env=core_trust_env,
+        )
         self.matcher = DealMatcher()
 
         self._running = True
@@ -89,6 +101,7 @@ class Worker:
         self._pending_closed: set[int] = set()
         self._state_path = self._resolve_state_path()
 
+        self._last_runtime_status = "connecting"
         self._next_account = 0.0
         self._next_positions = 0.0
         self._next_history = 0.0
@@ -130,7 +143,10 @@ class Worker:
                 self.client.initialize_and_login(
                     self.mt5_login, self._password, self.mt5_server
                 )
-                self._password = ""  # no dejar plaintext más tiempo del necesario
+                # OJO: el password NO se borra. Este mismo método se reutiliza
+                # para reconectar tras una caída de MT5; si se vaciaba, todos
+                # los re-logins fallaban y el slot acababa en error.
+                # (El plaintext ya vive en MT5_PASSWORD del entorno del hijo.)
                 self._write_runtime("connected")
                 self._status("connected", "login ok")
                 return True
@@ -254,7 +270,7 @@ class Worker:
             name=snap.name,
             server=snap.server,
         )
-        self._emit("account.snapshot", data.model_dump())
+        self._emit("account.snapshot", data.to_payload())
         _ = force
 
     def _pull_deals(self) -> list:
@@ -288,7 +304,7 @@ class Worker:
             slot_id=self.slot_id,
             message=message,
         )
-        self._emit("connection.status", data.model_dump())
+        self._emit("connection.status", data.to_payload())
 
     def _emit(self, event: str, data: dict) -> None:
         payload = BridgeEvent.make(
@@ -298,10 +314,18 @@ class Worker:
             timestamp=to_iso_z(utc_now()),
             data=data,
         )
-        self.emitter.emit(payload)
+        ok = self.emitter.emit(payload)
+        # Publicar el resultado para que /slots muestre si el Core recibe o no.
+        if not ok or event in {"connection.status", "account.snapshot"}:
+            self._write_runtime(self._last_runtime_status)
 
     def _write_runtime(self, status: str) -> None:
-        """Archivo que lee el Manager para el estado del slot (sin IPC extra)."""
+        """Archivo que lee el Manager para el estado del slot (sin IPC extra).
+
+        Incluye el estado del canal hacia el Core: sin esto, un Core que
+        rechaza o no recibe los eventos es invisible desde /slots.
+        """
+        self._last_runtime_status = status
         folder = self.terminal_path if self.terminal_path.is_dir() else self.terminal_path.parent
         path = folder / "slot_runtime.json"
         try:
@@ -312,6 +336,8 @@ class Worker:
                         "account_id": self.account_id,
                         "mt5_login": self.mt5_login,
                         "updated_at": to_iso_z(),
+                        "core_events_url": self.emitter.url,
+                        "emit": self.emitter.stats(),
                     }
                 ),
                 encoding="utf-8",
@@ -381,5 +407,11 @@ def run_worker_from_env() -> None:
         mt5_init_timeout_ms=int(os.environ.get("MT5_INIT_TIMEOUT_MS", "60000")),
         login_retry_max=int(os.environ.get("LOGIN_RETRY_MAX", "4")),
         login_retry_backoff_sec=float(os.environ.get("LOGIN_RETRY_BACKOFF_SEC", "8")),
+        core_retry_max=int(os.environ.get("CORE_RETRY_MAX", "3")),
+        core_trust_env=os.environ.get("CORE_HTTP_TRUST_ENV", "false").lower()
+        in {"1", "true", "yes"},
+        history_forward_buffer_hours=float(
+            os.environ.get("HISTORY_FORWARD_BUFFER_HOURS", "24")
+        ),
     )
     raise SystemExit(worker.run())

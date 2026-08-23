@@ -132,6 +132,70 @@ pip install pytest
 pytest tests/test_deal_matcher.py -q
 ```
 
+## 7. "La cuenta conecta pero no cargan los stats"
+
+`POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
+Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los
+alimenta el evento `account.snapshot`, así que si no cargan, el corte está en
+el camino Worker → Core. Para localizarlo:
+
+**1. ¿Llega el Bridge al Core?**
+
+```bat
+curl -X POST http://localhost:8088/api/v1/core-ping ^
+  -H "X-API-Key: TU_BRIDGE_API_KEY" -d "{}"
+```
+
+Devuelve el status y el cuerpo exactos del Core:
+
+| Resultado | Causa |
+|-----------|-------|
+| `ConnectError` / `ConnectTimeout` | El Core no es alcanzable: DNS, firewall o TLS. Si la máquina sale por proxy, `CORE_HTTP_TRUST_ENV=true`. |
+| `401` / `403` | `CORE_API_KEY` no coincide con la que espera el Core. |
+| `404` | `CORE_EVENTS_URL` apunta a una ruta que no existe. |
+| `2xx` | El transporte va bien → sigue en el paso 2. |
+
+**2. ¿Está emitiendo el Worker?**
+
+```bat
+curl http://localhost:8088/api/v1/slots/Slot-01 -H "X-API-Key: TU_BRIDGE_API_KEY"
+```
+
+El bloque `emit` dice lo que pasa con cada POST al Core:
+
+- `sent: 0` y `last_error` con texto → el Core rechaza los eventos.
+- `last_snapshot_at` reciente y `last_status: 200` → el Bridge sí está
+  mandando los stats; entonces el fallo está en **cómo el Core mapea `data`**
+  de `account.snapshot`.
+- todo a cero y `status: connecting` → el login MT5 aún no terminó; mira
+  `data/logs/Slot-01.log`.
+
+**3. Contrato de `account.snapshot`.** El Bridge manda las claves en las dos
+grafías, así que el Core puede leer cualquiera de las dos:
+
+```json
+{
+  "event": "account.snapshot",
+  "account_id": "uuid-del-core",
+  "mt5_login": 12345678,
+  "timestamp": "2026-08-23T21:00:00Z",
+  "data": {
+    "balance": 10000.0, "equity": 10120.5, "margin": 250.0,
+    "free_margin": 9870.5, "freeMargin": 9870.5,
+    "margin_level": 4048.2, "marginLevel": 4048.2,
+    "profit": 120.5, "currency": "USD", "leverage": 100,
+    "name": "Mi Cuenta", "server": "Broker-Server"
+  }
+}
+```
+
+**4. Probar sin tocar el Core.** Apunta el Bridge a su propio sink y mira los
+eventos crudos en `data/events.jsonl`:
+
+```
+CORE_EVENTS_URL=http://127.0.0.1:8088/api/v1/debug/events
+```
+
 ## API Manager
 
 | Método | Ruta | Descripción |
@@ -142,5 +206,6 @@ pytest tests/test_deal_matcher.py -q
 | POST | `/api/v1/accounts/connect` | Asigna slot y arranca Worker |
 | POST | `/api/v1/accounts/disconnect` | Mata Worker + terminal, libera slot |
 | POST | `/api/v1/slots/{id}/restart` | Reinicio limpio |
+| POST | `/api/v1/core-ping` | Diagnóstico del canal Bridge → Core |
 
 Todas las rutas salvo `health` requieren `X-API-Key` o `Authorization: Bearer`.

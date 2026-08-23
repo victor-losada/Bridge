@@ -54,6 +54,11 @@ class ProcessManager:
                 "POLL_POSITIONS_SEC": str(self.settings.poll_positions_sec),
                 "POLL_HISTORY_SEC": str(self.settings.poll_history_sec),
                 "HISTORY_LOOKBACK_DAYS": str(self.settings.history_lookback_days),
+                "HISTORY_FORWARD_BUFFER_HOURS": str(
+                    self.settings.history_forward_buffer_hours
+                ),
+                "CORE_RETRY_MAX": str(self.settings.core_retry_max),
+                "CORE_HTTP_TRUST_ENV": str(self.settings.core_http_trust_env).lower(),
                 "REPLAY_HISTORY_ON_CONNECT": str(
                     self.settings.replay_history_on_connect
                 ).lower(),

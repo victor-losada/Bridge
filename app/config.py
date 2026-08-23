@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # Core
     core_events_url: str = "http://localhost:8000/internal/bridge/events"
     core_api_key: str = Field(..., min_length=8)
+    # Reintentos del POST de eventos al Core (por evento).
+    core_retry_max: int = 3
+    # True = usar HTTP(S)_PROXY del sistema para llegar al Core.
+    core_http_trust_env: bool = False
 
     # Cifrado en reposo (Fernet.urlsafe_b64)
     fernet_key: str = Field(..., min_length=32)
@@ -38,6 +42,9 @@ class Settings(BaseSettings):
     poll_positions_sec: float = 6.0
     poll_history_sec: float = 7.0
     history_lookback_days: int = 7
+    # Holgura del tope de la ventana de historial: MT5 filtra por hora del
+    # servidor del bróker, no por UTC.
+    history_forward_buffer_hours: float = 24.0
 
     # Si True, al conectar se reenvían trade.closed del lookback.
     # Por defecto False: se marcan como ya vistos para no inundar al Core.
