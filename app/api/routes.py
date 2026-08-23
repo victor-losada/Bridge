@@ -13,6 +13,7 @@ from app.manager.slot_manager import SlotManager, SlotManagerError
 from app.models.commands import ConnectAccountRequest, DisconnectAccountRequest
 from app.models.events import BridgeEvent, ConnectionStatusData
 from app.utils import to_iso_z
+from app.worker.event_emitter import core_rejection
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -122,8 +123,10 @@ async def core_ping(request: Request) -> dict:
       - error de red/TLS  → el Worker tampoco puede emitir (proxy, firewall).
       - 401/403           → CORE_API_KEY no coincide con la del Core.
       - 404               → CORE_EVENTS_URL apunta a una ruta que no existe.
-      - 2xx               → el transporte va bien; el problema es el mapeo
-                            de `data` en el Core.
+      - 2xx + procesados  → el canal entero funciona.
+      - 2xx sin procesar  → el Core recibe y descarta (p.ej. `account_id` que
+                            no reconoce). Es lo esperado con el id de prueba;
+                            repite el ping con el account_id real.
 
     Emite `connection.status` (nunca stats falsos), así que no ensucia datos.
     """
@@ -177,18 +180,32 @@ async def core_ping(request: Request) -> dict:
 
     result["status_code"] = response.status_code
     result["response_body"] = response.text[:1000]
-    result["ok"] = response.status_code < 400
+    entregado = response.status_code < 400
+    rejection = core_rejection(response.text) if entregado else None
+    result["ok"] = entregado and rejection is None
+
     if response.status_code in (401, 403):
         result["hint"] = "CORE_API_KEY no coincide con la clave que espera el Core."
     elif response.status_code == 404:
         result["hint"] = "CORE_EVENTS_URL no existe en el Core (revisa la ruta)."
-    elif result["ok"]:
+    elif rejection is not None:
+        result["core_rejection"] = rejection
         result["hint"] = (
-            "Transporte OK: el Core acepta eventos. Si aun así no cargan los "
+            f"El Core recibió el evento pero lo descartó: {rejection}. "
+            f"Con el account_id de prueba ('{account_id}') es lo esperado. "
+            "Repite el ping con el account_id REAL que el Core mandó en "
+            "/accounts/connect: si sigue descartándolo, el Core no reconoce "
+            "su propio id y por eso no cargan los stats."
+        )
+    elif entregado:
+        result["hint"] = (
+            "Canal OK: el Core recibe y procesa. Si aun así no cargan los "
             "stats, el fallo está en cómo el Core mapea el campo `data` de "
             "account.snapshot."
         )
-    logger.info("core-ping status=%s", response.status_code)
+    logger.info(
+        "core-ping status=%s procesado=%s", response.status_code, rejection is None
+    )
     return result
 
 
@@ -206,4 +223,12 @@ async def debug_events(request: Request) -> dict:
     sink = settings.data_dir / "events.jsonl"
     with sink.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    return {"ok": True, "stored": event_name}
+    # Misma forma de respuesta que el Core real, para que el sink sea un
+    # ensayo fiel: aquí todo evento guardado cuenta como procesado.
+    return {
+        "ok": True,
+        "recibidos": 1,
+        "procesados": 1,
+        "detalle": [{"i": 0, "type": event_name, "ok": True}],
+        "stored": event_name,
+    }

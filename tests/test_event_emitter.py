@@ -106,3 +106,58 @@ def test_codigos_transitorios_se_reintentan(code: int) -> None:
     )
     assert emitter.emit(_event()) is False
     assert len(seen) == 2
+
+
+# --- 2xx que en realidad es un descarte -------------------------------------
+# El Core responde 200 aunque tire el evento. Sin mirar el cuerpo, un canal
+# roto parece sano: es exactamente el caso "conecta y no cargan los stats".
+
+def test_200_con_cuenta_desconocida_no_cuenta_como_entregado() -> None:
+    """Respuesta real del Core de producción ante un account_id que no conoce."""
+    cuerpo = {
+        "ok": True,
+        "recibidos": 1,
+        "procesados": 0,
+        "detalle": [
+            {"i": 0, "type": "connection.status", "ok": False, "error": "cuenta desconocida"}
+        ],
+    }
+    emitter, seen = _emitter(lambda r: httpx.Response(200, json=cuerpo), max_attempts=3)
+
+    assert emitter.emit(_event()) is False
+    # Reintentar no arregla un account_id desconocido.
+    assert len(seen) == 1
+
+    stats = emitter.stats()
+    assert stats["rejected"] == 1
+    assert stats["sent"] == 0
+    assert stats["failed"] == 0
+    assert stats["last_ok_at"] is None
+    assert "cuenta desconocida" in stats["last_error"]
+
+
+def test_200_procesado_si_cuenta_como_entregado() -> None:
+    cuerpo = {
+        "ok": True,
+        "recibidos": 1,
+        "procesados": 1,
+        "detalle": [{"i": 0, "type": "account.snapshot", "ok": True}],
+    }
+    emitter, _ = _emitter(lambda r: httpx.Response(200, json=cuerpo))
+
+    assert emitter.emit(_event()) is True
+    stats = emitter.stats()
+    assert (stats["sent"], stats["rejected"]) == (1, 0)
+    assert stats["last_snapshot_at"] is not None
+
+
+def test_respuesta_sin_contrato_conocido_se_da_por_buena() -> None:
+    """Un Core que solo responde 'OK' no debe marcarse como fallo inventado."""
+    from app.worker.event_emitter import core_rejection
+
+    assert core_rejection("OK") is None
+    assert core_rejection('{"ok":true}') is None
+    assert core_rejection("") is None
+    assert core_rejection('{"ok":false,"error":"firma inválida"}') == "firma inválida"
+    assert core_rejection('{"recibidos":3,"procesados":0}') == "recibidos=3 procesados=0"
+    assert core_rejection('{"recibidos":3,"procesados":3}') is None
