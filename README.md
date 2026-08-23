@@ -132,7 +132,32 @@ pip install pytest
 pytest tests/test_deal_matcher.py -q
 ```
 
-## 7. "La cuenta conecta pero no cargan los stats"
+## 7. Contrato de identidad de la cuenta
+
+El `account_id` que el Core manda en `/accounts/connect` es **opaco para el
+Bridge**: no se interpreta ni se transforma, solo se devuelve tal cual en el
+`account_id` (y su alias `accountId`) de cada evento. El Bridge no puede
+resolver cuentas por su cuenta, así que ese valor tiene que cumplir tres
+cosas, y las tres son responsabilidad del Core:
+
+1. **No nulo y no vacío.** Una cuenta sin identificador no puede recibir datos.
+2. **Estable.** El mismo valor durante toda la vida de la cuenta: si cambia
+   entre una conexión y la siguiente, el Core pierde el hilo de sus propios
+   eventos.
+3. **El mismo con el que el Core resuelve la cuenta al recibir el evento.** Si
+   el Core envía un identificador y luego busca por otro (o por otra columna),
+   los eventos llegan y se descartan.
+
+Cada evento lleva además `mt5_login`, que sirve como **verificación**: si no
+coincide con el de la cuenta que el Core resolvió, el evento es sospechoso y
+conviene registrarlo en vez de aceptarlo.
+
+Un Core que descarta eventos por no reconocer el `account_id` debe decirlo en
+el cuerpo de la respuesta. El Bridge lo detecta aunque el status sea 200 (ver
+`core_rejection` en `app/worker/event_emitter.py`), lo cuenta en
+`emit.rejected` y lo deja en `last_error` de `/slots`.
+
+## 8. "La cuenta conecta pero no cargan los stats"
 
 `POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
 Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los

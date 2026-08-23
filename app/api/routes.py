@@ -203,8 +203,10 @@ async def core_ping(request: Request) -> dict:
             "stats, el fallo está en cómo el Core mapea el campo `data` de "
             "account.snapshot."
         )
+    # `rejection` solo se calcula sobre un 2xx: en un 401 vale None y no
+    # significa "procesado". El veredicto bueno es result["ok"].
     logger.info(
-        "core-ping status=%s procesado=%s", response.status_code, rejection is None
+        "core-ping status=%s procesado=%s", response.status_code, result["ok"]
     )
     return result
 
