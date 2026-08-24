@@ -95,12 +95,22 @@ async def connect_account(body: ConnectAccountRequest, request: Request) -> dict
 
 @router.post("/accounts/disconnect", dependencies=[Depends(require_key)])
 async def disconnect_account(body: DisconnectAccountRequest, request: Request) -> dict:
+    """Desvincular es idempotente: si la cuenta ya no está conectada, ok."""
     mgr = _manager(request)
+    if not body.account_id and not body.slot_id:
+        raise HTTPException(400, "indica account_id o slot_id")
     try:
         state = await mgr.disconnect(account_id=body.account_id, slot_id=body.slot_id)
     except SlotManagerError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return {"ok": True, "slot": state.public_dict()}
+    if state is None:
+        return {
+            "ok": True,
+            "already_disconnected": True,
+            "detail": f"{body.account_id} no estaba conectada",
+            "slot": None,
+        }
+    return {"ok": True, "already_disconnected": False, "slot": state.public_dict()}
 
 
 @router.post("/slots/{slot_id}/restart", dependencies=[Depends(require_key)])

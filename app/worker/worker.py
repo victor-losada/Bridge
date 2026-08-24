@@ -69,6 +69,7 @@ class Worker:
         history_forward_buffer_hours: float = 24.0,
         mt5_login_timeout_ms: int = 180_000,
         mt5_login_attempts: int = 3,
+        mt5_reattach_wait_sec: float = 20.0,
     ) -> None:
         self.slot_id = slot_id
         self.account_id = account_id
@@ -90,6 +91,7 @@ class Worker:
             history_forward_buffer_hours=history_forward_buffer_hours,
             login_timeout_ms=mt5_login_timeout_ms,
             login_attempts=mt5_login_attempts,
+            reattach_wait_sec=mt5_reattach_wait_sec,
         )
         self.emitter = EventEmitter(
             core_events_url,
@@ -430,5 +432,6 @@ def run_worker_from_env() -> None:
         ),
         mt5_login_timeout_ms=int(os.environ.get("MT5_LOGIN_TIMEOUT_MS", "180000")),
         mt5_login_attempts=int(os.environ.get("MT5_LOGIN_ATTEMPTS", "3")),
+        mt5_reattach_wait_sec=float(os.environ.get("MT5_REATTACH_WAIT_SEC", "20")),
     )
     raise SystemExit(worker.run())

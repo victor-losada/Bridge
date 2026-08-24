@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # minuto: descarga del servidor nuevo y sincronización de símbolos.
     mt5_login_timeout_ms: int = 180_000
     mt5_login_attempts: int = 3
+    # Espera antes de reenganchar el IPC y preguntar quién entró.
+    mt5_reattach_wait_sec: float = 20.0
 
     @field_validator("terminals_root", "data_dir", mode="before")
     @classmethod
