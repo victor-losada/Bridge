@@ -252,7 +252,7 @@ class Worker:
         # Cierres que ocurrieron entre polls (o cuentas netting rápidas).
         for trade in self.matcher.pop_ready_trades(sl_tp_by_position=self._sl_tp):
             self._pending_closed.discard(trade.position_id)
-            self._emit_trade(trade)
+            self._emit_trade(trade)  # si el Core lo rechaza, vuelve a pending
 
         self._save_persist()
 
@@ -288,7 +288,17 @@ class Worker:
         self._sl_tp[pos.ticket] = (sl, tp)
 
     def _emit_trade(self, trade) -> None:  # noqa: ANN001
-        self._emit("trade.closed", trade.to_event_data().model_dump())
+        ok = self._emit("trade.closed", trade.to_event_data().model_dump())
+        if not ok:
+            # Un trade cerrado no se puede perder: si el Core no lo aceptó,
+            # se desmarca y vuelve a salir en el siguiente poll de historial.
+            self.matcher.unmark_emitted([trade.position_id])
+            self._pending_closed.add(trade.position_id)
+            logger.warning(
+                "trade.closed position=%s no aceptado por el Core; se reintentará",
+                trade.position_id,
+            )
+            return
         logger.info(
             "trade.closed position=%s %s %s vol=%s pnl=%s",
             trade.position_id,
@@ -306,7 +316,7 @@ class Worker:
         )
         self._emit("connection.status", data.to_payload())
 
-    def _emit(self, event: str, data: dict) -> None:
+    def _emit(self, event: str, data: dict) -> bool:
         payload = BridgeEvent.make(
             event=event,
             account_id=self.account_id,
@@ -318,6 +328,7 @@ class Worker:
         # Publicar el resultado para que /slots muestre si el Core recibe o no.
         if not ok or event in {"connection.status", "account.snapshot"}:
             self._write_runtime(self._last_runtime_status)
+        return ok
 
     def _write_runtime(self, status: str) -> None:
         """Archivo que lee el Manager para el estado del slot (sin IPC extra).

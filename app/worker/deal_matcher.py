@@ -261,6 +261,16 @@ class DealMatcher:
         for pid in position_ids:
             self._emitted.add(int(pid))
 
+    def unmark_emitted(self, position_ids: Iterable[int]) -> None:
+        """Deshace la marca para que el trade se reintente.
+
+        `pop_ready_trades` marca como emitido antes de que el Worker envíe:
+        si el Core rechaza el evento, sin esto el trade se perdería para
+        siempre porque nunca volvería a salir del matcher.
+        """
+        for pid in position_ids:
+            self._emitted.discard(int(pid))
+
     def ingest(self, deals: Iterable[RawDeal]) -> list[RawDeal]:
         """Añade deals nuevos. Devuelve los que no se habían visto."""
         fresh: list[RawDeal] = []
