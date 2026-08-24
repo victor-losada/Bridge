@@ -8,6 +8,8 @@ import pytest
 
 from app.tools.provision_slots import provision
 
+pytest_plugins = ("pytest_asyncio",)
+
 
 def _plantilla(base: Path) -> Path:
     """Imita un MT5 portable ya arrancado una vez."""
@@ -93,3 +95,29 @@ def test_dry_run_no_escribe(tmp_path: Path) -> None:
     creados, _ = provision(_plantilla(tmp_path), root, 3, dry_run=True)
     assert creados == ["Slot-01", "Slot-02", "Slot-03"]
     assert not (root / "Slot-01").exists()
+
+
+# --- Desvincular es idempotente --------------------------------------------
+
+@pytest.mark.asyncio
+async def test_desconectar_una_cuenta_que_no_esta_no_es_error(tmp_path: Path) -> None:
+    """El Manager guarda los slots en memoria: tras reiniciarlo, el Core pide
+    desvincular cuentas que aquí ya no existen. Devolver 404 dejaba al Core
+    sin poder desvincular nada."""
+    from app.config import Settings
+    from app.manager.slot_manager import SlotManager
+
+    settings = Settings(
+        bridge_api_key="x" * 16,
+        core_api_key="y" * 8,
+        fernet_key="Ky1DFHTvPX2CjJKcgTLdmB2fF2ZQK5Xz3mFvMHVGLJU=",
+        slot_count=2,
+        terminals_root=tmp_path / "terminals",
+        data_dir=tmp_path / "data",
+    )
+    manager = SlotManager(settings)
+    manager.slots = {}
+    await manager.start()
+    manager._watch_task.cancel()
+
+    assert await manager.disconnect(account_id="uuid-que-no-esta") is None

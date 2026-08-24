@@ -135,15 +135,27 @@ class SlotManager:
             self._spawn(state)
             return state
 
-    async def disconnect(self, *, account_id: str | None = None, slot_id: str | None = None) -> SlotState:
+    async def disconnect(
+        self, *, account_id: str | None = None, slot_id: str | None = None
+    ) -> SlotState | None:
+        """Desconecta y libera el slot.
+
+        Devuelve None si la cuenta no estaba en ningún slot. Desvincular es
+        una orden de estado final ("que no esté conectada"), no una operación
+        sobre un recurso: si ya se cumple, no es un error. El Manager guarda
+        los slots en memoria, así que tras reiniciarlo el Core pide desvincular
+        cuentas que aquí ya no existen — y eso no puede dejar al Core sin poder
+        desvincular nada.
+        """
         async with self._lock:
             state: SlotState | None = None
             if slot_id:
-                state = self.get_slot(slot_id)
+                state = self.get_slot(slot_id)  # slot inexistente sí es error
             elif account_id:
                 state = self.find_by_account(account_id)
             if state is None:
-                raise SlotManagerError("no hay slot para desconectar")
+                logger.info("desconectar: %s no estaba en ningún slot", account_id)
+                return None
             self.proc.stop_slot(state.slot_id, self.slot_dir(state.slot_id))
             state.status = SlotStatus.DISCONNECTED
             state.touch()

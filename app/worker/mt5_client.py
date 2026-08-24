@@ -83,10 +83,18 @@ class MT5Client:
         terminal_path: Path,
         timeout_ms: int = 60_000,
         history_forward_buffer_hours: float = 24.0,
+        login_timeout_ms: int = 180_000,
+        login_attempts: int = 3,
+        reattach_wait_sec: float = 20.0,
     ) -> None:
         self.terminal_path = Path(terminal_path)
         self.timeout_ms = timeout_ms
         self.history_forward_buffer_hours = history_forward_buffer_hours
+        self.login_timeout_ms = login_timeout_ms
+        self.login_attempts = max(1, login_attempts)
+        # Margen para que el terminal termine de cambiar de bróker antes de
+        # preguntarle quién está dentro.
+        self.reattach_wait_sec = reattach_wait_sec
         self._connected = False
 
     @property
@@ -146,8 +154,7 @@ class MT5Client:
             mt5.shutdown()
             raise MT5ConnectionError(f"IPC no listo tras initialize: {err}")
 
-        logged = mt5.login(login=int(login), password=password, server=server)
-        if not logged:
+        if not self._login_with_patience(exe, login, password, server):
             err = mt5.last_error()
             mt5.shutdown()
             raise MT5ConnectionError(f"mt5.login falló: {err}")
@@ -171,6 +178,71 @@ class MT5Client:
             info.name,
             info.server,
         )
+
+    def _login_with_patience(
+        self, exe: Path, login: int, password: str, server: str
+    ) -> bool:
+        """Login tolerante al cambio de bróker.
+
+        Si el terminal viene de una plantilla con otro bróker, `login()` lo
+        obliga a desconectarse y reconectarse contra el servidor nuevo. En ese
+        corte MT5 **tira el canal IPC**, así que la llamada devuelve -10005 de
+        inmediato aunque el terminal acabe entrando en la cuenta (se ve en el
+        título de su ventana). Y reintentar el login sobre un pipe muerto
+        devuelve -10005 otra vez, para siempre.
+
+        Por eso, ante -10005, no se reintenta a ciegas: se vuelve a enganchar
+        el IPC y se pregunta al terminal quién está dentro. Si ya es la cuenta
+        pedida, el login había funcionado. Un fallo de credenciales no se
+        reintenta — repetirlo solo arriesga bloquear la cuenta.
+        """
+        for attempt in range(1, self.login_attempts + 1):
+            if mt5.login(
+                login=int(login),
+                password=password,
+                server=server,
+                timeout=self.login_timeout_ms,
+            ):
+                return True
+
+            err = mt5.last_error()
+            code = err[0] if isinstance(err, (tuple, list)) and err else None
+            logger.warning(
+                "mt5.login intento %s/%s: %s", attempt, self.login_attempts, err
+            )
+            if code != -10005:
+                return False  # credenciales o servidor: reintentar no ayuda
+            if attempt == self.login_attempts:
+                break
+
+            logger.info(
+                "IPC caído por el cambio de bróker; reenganchando para ver "
+                "si el terminal ya entró"
+            )
+            time.sleep(self.reattach_wait_sec)
+            if not self._reattach(exe):
+                continue
+            if self._logged_as(login):
+                logger.info("el terminal ya está dentro de la cuenta %s", login)
+                return True
+        return False
+
+    def _reattach(self, exe: Path) -> bool:
+        """Rehace el canal IPC con el terminal, que sigue vivo."""
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+        time.sleep(1.0)
+        for portable in (True, False):
+            if mt5.initialize(path=str(exe), timeout=self.timeout_ms, portable=portable):
+                return True
+        logger.warning("no se pudo reenganchar el IPC: %s", mt5.last_error())
+        return False
+
+    def _logged_as(self, login: int) -> bool:
+        info = mt5.account_info()
+        return info is not None and int(info.login) == int(login)
 
     def shutdown(self) -> None:
         self._connected = False

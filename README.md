@@ -172,6 +172,19 @@ Es idempotente: un slot que ya tiene `terminal64.exe` se omite, así que se
 puede relanzar para ampliar el pool sin tocar los que están conectados.
 `--force` lo rehace y **borra su contenido**.
 
+**Cuentas de otro bróker.** La plantilla lleva dentro la sesión del bróker con
+el que se configuró. Si el slot recibe una cuenta de un bróker distinto, el
+terminal se desconecta y se reconecta contra el servidor nuevo, y **en ese
+corte MT5 tira el canal IPC**: `login()` devuelve `-10005` al instante aunque
+el terminal sí acabe entrando (se ve en el título de su ventana). Reintentar
+el login sobre ese canal muerto falla siempre.
+
+Por eso, ante un `-10005`, el Worker espera `MT5_REATTACH_WAIT_SEC`, rehace el
+IPC y le pregunta al terminal qué cuenta tiene dentro: si ya es la pedida, el
+login había funcionado. Si trabajas siempre con los mismos brókers, una
+plantilla por bróker (`--template terminals/_plantilla_exness`) evita el
+cambio y la primera conexión es directa.
+
 Al ampliar, sube también `SLOT_COUNT` en el `.env` y reinicia el Manager.
 
 **Límite real de una máquina.** Cada terminal MT5 ocupa del orden de 150-300
@@ -318,7 +331,7 @@ CORE_EVENTS_URL=http://127.0.0.1:8088/api/v1/debug/events
 | GET | `/api/v1/slots` | Pool |x|
 | GET | `/api/v1/slots/{id}` | Detalle |
 | POST | `/api/v1/accounts/connect` | Asigna slot y arranca Worker |
-| POST | `/api/v1/accounts/disconnect` | Mata Worker + terminal, libera slot |
+| POST | `/api/v1/accounts/disconnect` | Mata Worker + terminal, libera slot (idempotente) |
 | POST | `/api/v1/slots/{id}/restart` | Reinicio limpio |
 | POST | `/api/v1/core-ping` | Diagnóstico del canal Bridge → Core |
 
