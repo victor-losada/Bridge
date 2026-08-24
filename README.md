@@ -43,10 +43,26 @@ Eventos: `connection.status`, `account.snapshot`, `position.opened`,
 
    Eso crea `config/` y `bases/` dentro del slot.
 
-4. Repite la copia completa para `Slot-02`, `Slot-03`, … (no uses shortcuts
-   ni la misma carpeta para dos slots). Con `SLOT_COUNT=15` prepara 15 copias.
+4. **Entra una vez en una cuenta del bróker** (Archivo → Iniciar sesión en
+   cuenta de operaciones). Vale una demo. Esto no es para operar: es para que
+   el terminal deje de arrancar en el asistente de "abrir cuenta" y guarde la
+   lista de servidores del bróker.
 
-5. No hace falta loguear la cuenta a mano: el Worker hace `initialize` + `login`.
+   Sin este paso, `mt5.initialize()` falla con `-10005 IPC timeout`: el
+   terminal se queda esperando un clic y no atiende a la API.
+
+5. Cierra el terminal. **A partir de aquí no se vuelve a tocar a mano**: el
+   Worker hace `initialize` + `login` con las credenciales que manda el Core.
+
+6. Para el resto de slots **no repitas nada de esto**. Deja esa carpeta como
+   plantilla y clónala:
+
+   ```bat
+   ren terminals\Slot-01 _plantilla
+   python -m app.tools.provision_slots --count 15
+   ```
+
+   Ver "Escalar el pool" más abajo.
 
 ## 2. Configurar variables
 
@@ -132,7 +148,39 @@ pip install pytest
 pytest tests/test_deal_matcher.py -q
 ```
 
-## 7. Contrato de identidad de la cuenta
+## 7. Escalar el pool
+
+Copiar un MT5 por slot a mano no escala: con 100 cuentas serían 100 copias y
+100 logins manuales. Se configura **una** vez una plantilla y se clona.
+
+```bat
+python -m app.tools.provision_slots --count 20
+python -m app.tools.provision_slots --count 80 --first 21   # ampliar después
+python -m app.tools.provision_slots --count 100 --dry-run   # ver sin copiar
+```
+
+La plantilla es `terminals/_plantilla` (cámbiala con `--template`): una
+instalación de MT5 arrancada una vez en portable y con una sesión iniciada,
+tal como en el paso 1.
+
+Del clon se excluye lo que cada terminal regenera solo (`bases`, `logs`,
+`MQL5/Logs`) y el estado de un slot anterior (`worker_state.json`,
+`slot_runtime.json`). Sin eso, cada copia arrastraría cientos de megas de
+historial descargado y, peor, el estado de otro slot.
+
+Es idempotente: un slot que ya tiene `terminal64.exe` se omite, así que se
+puede relanzar para ampliar el pool sin tocar los que están conectados.
+`--force` lo rehace y **borra su contenido**.
+
+Al ampliar, sube también `SLOT_COUNT` en el `.env` y reinicia el Manager.
+
+**Límite real de una máquina.** Cada terminal MT5 ocupa del orden de 150-300
+MB de RAM y su propio proceso. 20 slots son unos 4-6 GB; 100 no caben en una
+máquina normal (20-30 GB solo de terminales, más disco). A partir de unas
+pocas decenas de cuentas hay que repartir en varias máquinas, cada una con su
+Bridge Manager, y que el Core reparta las cuentas entre ellas.
+
+## 8. Contrato de identidad de la cuenta
 
 El `account_id` que el Core manda en `/accounts/connect` es **opaco para el
 Bridge**: no se interpreta ni se transforma, solo se devuelve tal cual en el
@@ -157,7 +205,7 @@ el cuerpo de la respuesta. El Bridge lo detecta aunque el status sea 200 (ver
 `core_rejection` en `app/worker/event_emitter.py`), lo cuenta en
 `emit.rejected` y lo deja en `last_error` de `/slots`.
 
-## 8. "La cuenta conecta pero no cargan los stats"
+## 9. "La cuenta conecta pero no cargan los stats"
 
 `POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
 Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los
