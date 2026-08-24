@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     login_retry_backoff_sec: float = 8.0
     shutdown_timeout_sec: float = 12.0
     mt5_init_timeout_ms: int = 60_000
+    # Cambiar de bróker (plantilla con otro broker dentro) puede pasar del
+    # minuto: descarga del servidor nuevo y sincronización de símbolos.
+    mt5_login_timeout_ms: int = 180_000
+    mt5_login_attempts: int = 3
 
     @field_validator("terminals_root", "data_dir", mode="before")
     @classmethod

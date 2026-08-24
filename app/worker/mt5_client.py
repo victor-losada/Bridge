@@ -83,10 +83,14 @@ class MT5Client:
         terminal_path: Path,
         timeout_ms: int = 60_000,
         history_forward_buffer_hours: float = 24.0,
+        login_timeout_ms: int = 180_000,
+        login_attempts: int = 3,
     ) -> None:
         self.terminal_path = Path(terminal_path)
         self.timeout_ms = timeout_ms
         self.history_forward_buffer_hours = history_forward_buffer_hours
+        self.login_timeout_ms = login_timeout_ms
+        self.login_attempts = max(1, login_attempts)
         self._connected = False
 
     @property
@@ -146,8 +150,7 @@ class MT5Client:
             mt5.shutdown()
             raise MT5ConnectionError(f"IPC no listo tras initialize: {err}")
 
-        logged = mt5.login(login=int(login), password=password, server=server)
-        if not logged:
+        if not self._login_with_patience(login, password, server):
             err = mt5.last_error()
             mt5.shutdown()
             raise MT5ConnectionError(f"mt5.login falló: {err}")
@@ -171,6 +174,41 @@ class MT5Client:
             info.name,
             info.server,
         )
+
+    def _login_with_patience(self, login: int, password: str, server: str) -> bool:
+        """Login tolerante al cambio de bróker.
+
+        Si el terminal viene de una plantilla con otro bróker, `login()` obliga
+        a desconectar, localizar el servidor nuevo y sincronizar sus símbolos.
+        Eso pasa del minuto y el timeout por defecto (60 s) lo corta a medias.
+        Peor: reiniciar el terminal en ese punto tira todo el trabajo hecho y
+        el siguiente intento vuelve a empezar de cero, sin converger nunca.
+
+        Así que ante un IPC timeout se reintenta el login SIN tocar el
+        terminal: sigue avanzando por dentro. Un fallo de credenciales, en
+        cambio, no se reintenta — repetirlo solo arriesga bloquear la cuenta.
+        """
+        for attempt in range(1, self.login_attempts + 1):
+            if mt5.login(
+                login=int(login),
+                password=password,
+                server=server,
+                timeout=self.login_timeout_ms,
+            ):
+                return True
+
+            err = mt5.last_error()
+            code = err[0] if isinstance(err, (tuple, list)) and err else None
+            logger.warning(
+                "mt5.login intento %s/%s: %s", attempt, self.login_attempts, err
+            )
+            if code != -10005 or attempt == self.login_attempts:
+                return False
+            logger.info(
+                "el terminal sigue cambiando de bróker; se reintenta sin reiniciarlo"
+            )
+            time.sleep(5.0)
+        return False
 
     def shutdown(self) -> None:
         self._connected = False

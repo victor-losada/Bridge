@@ -172,6 +172,15 @@ Es idempotente: un slot que ya tiene `terminal64.exe` se omite, así que se
 puede relanzar para ampliar el pool sin tocar los que están conectados.
 `--force` lo rehace y **borra su contenido**.
 
+**Cuentas de otro bróker.** La plantilla lleva dentro la sesión del bróker con
+el que se configuró. Si el slot recibe una cuenta de un bróker distinto, el
+terminal tiene que desconectarse, localizar el servidor nuevo y sincronizar
+sus símbolos: eso pasa del minuto. Por eso `MT5_LOGIN_TIMEOUT_MS` vale 180000
+y el login se reintenta sin reiniciar el terminal — reiniciarlo tira a la
+basura el cambio a medio hacer y el intento siguiente vuelve a empezar de
+cero, sin converger nunca. Si trabajas siempre con los mismos brókers, tener
+una plantilla por bróker acelera la primera conexión.
+
 Al ampliar, sube también `SLOT_COUNT` en el `.env` y reinicia el Manager.
 
 **Límite real de una máquina.** Cada terminal MT5 ocupa del orden de 150-300

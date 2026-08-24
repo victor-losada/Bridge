@@ -63,6 +63,8 @@ class ProcessManager:
                     self.settings.replay_history_on_connect
                 ).lower(),
                 "MT5_INIT_TIMEOUT_MS": str(self.settings.mt5_init_timeout_ms),
+                "MT5_LOGIN_TIMEOUT_MS": str(self.settings.mt5_login_timeout_ms),
+                "MT5_LOGIN_ATTEMPTS": str(self.settings.mt5_login_attempts),
                 "LOGIN_RETRY_MAX": str(self.settings.login_retry_max),
                 "LOGIN_RETRY_BACKOFF_SEC": str(self.settings.login_retry_backoff_sec),
                 "PYTHONUNBUFFERED": "1",
