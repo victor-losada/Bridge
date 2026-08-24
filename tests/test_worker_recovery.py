@@ -160,3 +160,59 @@ def test_error_del_canal_al_core_se_marca_y_se_limpia() -> None:
 
     # Un error ajeno al canal (p.ej. login MT5) no se pisa.
     assert _core_channel_error(recuperado, "mt5.login falló") == "mt5.login falló"
+
+
+def test_trade_rechazado_por_el_core_se_reintenta(tmp_path: Path) -> None:
+    """Un trade.closed que el Core no acepta no puede perderse.
+
+    pop_ready_trades marca como emitido ANTES de enviar; sin deshacer esa
+    marca, un rechazo del Core borraba la operación del historial para
+    siempre. Reproduce el caso real: el Core respondía 200 y fallaba al
+    guardar (user_id sin valor por defecto).
+    """
+
+    class _EmitterQueRechaza(_FakeEmitter):
+        def emit(self, event) -> bool:  # noqa: ANN001
+            self.events.append(event.event)
+            return event.event != "trade.closed"
+
+    worker = _worker(tmp_path, _FakeClient())
+    worker.emitter = _EmitterQueRechaza()  # type: ignore[assignment]
+
+    class _Trade:
+        position_id = 608658310
+        symbol = "ETHUSDm"
+        direction = "sell"
+        volume = 0.1
+        profit = -0.03
+
+        def to_event_data(self):
+            from app.models.events import ClosedTradeData
+
+            return ClosedTradeData(
+                positionId="608658310",
+                dealId="1",
+                symbol="ETHUSDm",
+                type="sell",
+                volume=0.1,
+                openPrice=1.0,
+                closePrice=1.0,
+                openTime="2026-08-24T00:00:00Z",
+                closeTime="2026-08-24T00:10:00Z",
+                profit=-0.03,
+            )
+
+    worker.matcher.mark_emitted([608658310])
+    worker._emit_trade(_Trade())
+
+    # Desmarcado y en cola: el siguiente poll de historial lo reintenta.
+    assert 608658310 not in worker.matcher.emitted_position_ids
+    assert 608658310 in worker._pending_closed
+
+
+def test_trade_aceptado_queda_marcado(tmp_path: Path) -> None:
+    worker = _worker(tmp_path, _FakeClient())
+    worker.matcher.mark_emitted([777])
+    assert 777 in worker.matcher.emitted_position_ids
+    worker.matcher.unmark_emitted([777])
+    assert 777 not in worker.matcher.emitted_position_ids
