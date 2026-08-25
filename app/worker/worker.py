@@ -70,6 +70,7 @@ class Worker:
         mt5_login_timeout_ms: int = 180_000,
         mt5_login_attempts: int = 3,
         mt5_reattach_wait_sec: float = 20.0,
+        emit_position_events: bool = True,
     ) -> None:
         self.slot_id = slot_id
         self.account_id = account_id
@@ -82,6 +83,10 @@ class Worker:
         self.poll_history_sec = poll_history_sec
         self.history_lookback_days = history_lookback_days
         self.replay_history_on_connect = replay_history_on_connect
+        # El libro de posiciones abiertas es opcional: hay Cores que solo
+        # quieren operaciones cerradas. El seguimiento interno se mantiene
+        # igual (hace falta para emparejar los cierres), solo no se emite.
+        self.emit_position_events = emit_position_events
         self.login_retry_max = login_retry_max
         self.login_retry_backoff_sec = login_retry_backoff_sec
 
@@ -190,9 +195,15 @@ class Worker:
         # Snapshot inicial de posiciones abiertas (sin position.opened de más:
         # sí emitimos opened para que el Core tenga el libro actual).
         for pos in self.client.positions():
-            self._positions[pos.ticket] = pos
             self._remember_sl_tp(pos)
-            self._emit("position.opened", position_to_event_dict(pos))
+            if self._emit_position("position.opened", pos):
+                self._positions[pos.ticket] = pos
+            else:
+                # Sin registrarla, el primer poll la reemite.
+                logger.warning(
+                    "position.opened %s no aceptada al arrancar; se reintentará",
+                    pos.ticket,
+                )
         self._poll_account(force=True)
 
     def _loop(self) -> None:
@@ -220,23 +231,51 @@ class Worker:
             time.sleep(0.25)
 
     def _poll_positions(self) -> None:
-        current_list = self.client.positions()
-        current = {p.ticket: p for p in current_list}
+        """Libro de posiciones, con reintento de lo que el Core no acepte.
+
+        Una posición solo se da por conocida si su evento entró. Si el Core lo
+        rechaza, se conserva el estado ANTERIOR: el siguiente poll vuelve a
+        ver la diferencia y lo reemite. Sin esto, un rechazo hacía desaparecer
+        la posición del libro del Core hasta el siguiente arranque del Worker.
+        """
+        current = {p.ticket: p for p in self.client.positions()}
+        previous = self._positions
+        known: dict[int, PositionSnapshot] = {}
 
         for ticket, pos in current.items():
             self._remember_sl_tp(pos)
-            prev = self._positions.get(ticket)
+            prev = previous.get(ticket)
             if prev is None:
-                self._emit("position.opened", position_to_event_dict(pos))
+                if self._emit_position("position.opened", pos):
+                    known[ticket] = pos
+                else:
+                    logger.warning(
+                        "position.opened %s no aceptada; se reintentará", ticket
+                    )
             elif prev.fingerprint() != pos.fingerprint():
-                self._emit("position.updated", position_to_event_dict(pos))
+                if self._emit_position("position.updated", pos):
+                    known[ticket] = pos
+                else:
+                    known[ticket] = prev  # el cambio sigue pendiente
+                    logger.warning(
+                        "position.updated %s no aceptada; se reintentará", ticket
+                    )
+            else:
+                known[ticket] = pos
 
-        for ticket, prev in list(self._positions.items()):
-            if ticket not in current:
-                self._emit("position.closed", position_to_event_dict(prev))
-                self._pending_closed.add(ticket)
+        for ticket, prev in previous.items():
+            if ticket in current:
+                continue
+            if not self._emit_position("position.closed", prev):
+                # Sigue abierta para nosotros: el próximo poll la ve cerrarse
+                # otra vez y reemite.
+                known[ticket] = prev
+                logger.warning(
+                    "position.closed %s no aceptada; se reintentará", ticket
+                )
+            self._pending_closed.add(ticket)
 
-        self._positions = current
+        self._positions = known
 
     def _poll_history(self) -> None:
         deals = self._pull_deals()
@@ -321,6 +360,16 @@ class Worker:
             message=message,
         )
         self._emit("connection.status", data.to_payload())
+
+    def _emit_position(self, event: str, pos: PositionSnapshot) -> bool:
+        """Emite un evento de posición, si el Core los quiere.
+
+        Con emit_position_events=False devuelve True sin mandar nada: el
+        seguimiento interno sigue igual y los trade.closed no se ven afectados.
+        """
+        if not self.emit_position_events:
+            return True
+        return self._emit(event, position_to_event_dict(pos))
 
     def _emit(self, event: str, data: dict) -> bool:
         payload = BridgeEvent.make(
@@ -433,5 +482,7 @@ def run_worker_from_env() -> None:
         mt5_login_timeout_ms=int(os.environ.get("MT5_LOGIN_TIMEOUT_MS", "180000")),
         mt5_login_attempts=int(os.environ.get("MT5_LOGIN_ATTEMPTS", "3")),
         mt5_reattach_wait_sec=float(os.environ.get("MT5_REATTACH_WAIT_SEC", "20")),
+        emit_position_events=os.environ.get("EMIT_POSITION_EVENTS", "true").lower()
+        not in {"0", "false", "no"},
     )
     raise SystemExit(worker.run())

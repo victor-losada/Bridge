@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Por defecto False: se marcan como ya vistos para no inundar al Core.
     replay_history_on_connect: bool = False
 
+    # False = no emitir position.opened/updated/closed. El Core que solo
+    # quiere operaciones cerradas se ahorra el libro de abiertas; el
+    # seguimiento interno y los trade.closed no cambian.
+    emit_position_events: bool = True
+
     # Lifecycle
     worker_restart_max: int = 5
     worker_restart_backoff_sec: float = 5.0

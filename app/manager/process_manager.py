@@ -66,6 +66,7 @@ class ProcessManager:
                 "MT5_LOGIN_TIMEOUT_MS": str(self.settings.mt5_login_timeout_ms),
                 "MT5_LOGIN_ATTEMPTS": str(self.settings.mt5_login_attempts),
                 "MT5_REATTACH_WAIT_SEC": str(self.settings.mt5_reattach_wait_sec),
+                "EMIT_POSITION_EVENTS": str(self.settings.emit_position_events).lower(),
                 "LOGIN_RETRY_MAX": str(self.settings.login_retry_max),
                 "LOGIN_RETRY_BACKOFF_SEC": str(self.settings.login_retry_backoff_sec),
                 "PYTHONUNBUFFERED": "1",
