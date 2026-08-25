@@ -320,3 +320,34 @@ def test_position_closed_rechazada_se_reintenta(tmp_path: Path) -> None:
 
     worker._poll_positions()
     assert worker.emitter.events.count("position.closed") == 2
+
+
+def test_sin_libro_de_abiertas_no_se_emiten_posiciones(tmp_path: Path) -> None:
+    """El Core que solo quiere operaciones cerradas no debe recibir el libro.
+
+    Sin este interruptor, un Core que rechaza position.opened haría que el
+    Worker lo reintentara en cada poll, para siempre.
+    """
+    worker = _worker_con(tmp_path, [_pos(9457323)], acepta=True)
+    worker.emit_position_events = False
+
+    worker._poll_positions()
+    worker._poll_positions()
+
+    assert worker.emitter.events == []          # nada emitido
+    assert 9457323 in worker._positions          # pero sí se sigue por dentro
+
+
+def test_sin_libro_de_abiertas_los_cierres_se_siguen_detectando(tmp_path: Path) -> None:
+    """El seguimiento interno alimenta el emparejado de trade.closed."""
+    posiciones = [_pos(9457323)]
+    worker = _worker_con(tmp_path, posiciones, acepta=True)
+    worker.emit_position_events = False
+
+    worker._poll_positions()
+    posiciones.clear()
+    worker._poll_positions()
+
+    assert worker.emitter.events == []
+    assert 9457323 in worker._pending_closed     # listo para emparejar el cierre
+    assert worker._sl_tp.get(9457323) is not None

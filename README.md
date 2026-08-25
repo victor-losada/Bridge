@@ -130,6 +130,23 @@ Logs por slot: `data/logs/Slot-01.log`.
 
 ## 5. Contrato de `trade.closed`
 
+**Los cierres parciales esperan al cierre total.** El Worker agrupa los deals
+por posición y solo emite cuando el volumen de salida cubre el de entrada. Si
+sacas la mitad y dejas correr el resto, no sale nada todavía; al cerrar el
+resto sale **un único** `trade.closed` con la operación completa: volumen total
+de entrada, precio de apertura y de cierre promediados (el parcial incluido) y
+el P&L sumado de todos los deals.
+
+Es lo que evita que una misma operación aparezca troceada, pero tiene una
+consecuencia que conviene conocer: quien va sacando parciales no ve nada en el
+Core hasta cerrar el último trozo.
+
+Si el Core solo registra operaciones cerradas y no quiere el libro de
+abiertas, `EMIT_POSITION_EVENTS=false`. El seguimiento interno de posiciones
+se mantiene igual —hace falta para emparejar los cierres—, simplemente no se
+emiten `position.opened/updated/closed`.
+
+
 El Worker agrupa deals por `position_id`. Cuando el volumen de salida cubre
 el de entrada, emite un único `trade.closed` (cierres parciales esperan al
 cierre total). `dealId` es el ticket del último deal OUT.
