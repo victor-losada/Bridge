@@ -210,7 +210,25 @@ máquina normal (20-30 GB solo de terminales, más disco). A partir de unas
 pocas decenas de cuentas hay que repartir en varias máquinas, cada una con su
 Bridge Manager, y que el Core reparta las cuentas entre ellas.
 
-## 8. Contrato de identidad de la cuenta
+## 8. Reinicios del Manager
+
+Las cuentas asignadas se guardan en `data/slots.json` y **se recuperan solas
+al arrancar**: el Manager relanza el Worker de cada una en su mismo slot.
+
+Sin eso, reiniciar el Manager dejaba al Core creyendo que las cuentas seguían
+conectadas mientras aquí no había ninguna: dejaban de llegar datos, el Core no
+dejaba reconectar la misma cuenta por considerarla ya conectada, y desvincular
+no encontraba nada que desvincular.
+
+El password va cifrado con Fernet, igual que en memoria, así que `slots.json`
+no contiene credenciales en claro. Aun así vive bajo `data/`, que está en el
+`.gitignore` y no debe salir de la máquina.
+
+Si una cuenta no se puede recuperar (se cambió `FERNET_KEY`, desapareció el
+terminal del slot), ese slot queda en `error` con el motivo en `last_error`,
+visible en `/slots`. Nunca en silencio.
+
+## 9. Contrato de identidad de la cuenta
 
 El `account_id` que el Core manda en `/accounts/connect` es **opaco para el
 Bridge**: no se interpreta ni se transforma, solo se devuelve tal cual en el
@@ -235,7 +253,7 @@ el cuerpo de la respuesta. El Bridge lo detecta aunque el status sea 200 (ver
 `core_rejection` en `app/worker/event_emitter.py`), lo cuenta en
 `emit.rejected` y lo deja en `last_error` de `/slots`.
 
-## 9. "La cuenta conecta pero no cargan los stats"
+## 10. "La cuenta conecta pero no cargan los stats"
 
 `POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
 Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los
