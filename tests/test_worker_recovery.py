@@ -216,3 +216,107 @@ def test_trade_aceptado_queda_marcado(tmp_path: Path) -> None:
     assert 777 in worker.matcher.emitted_position_ids
     worker.matcher.unmark_emitted([777])
     assert 777 not in worker.matcher.emitted_position_ids
+
+
+# --- Libro de posiciones: lo que el Core no acepta se reintenta -------------
+
+def _pos(ticket: int, sl: float = 0.0):
+    from datetime import datetime, timezone
+
+    from app.worker.mt5_client import PositionSnapshot
+
+    return PositionSnapshot(
+        ticket=ticket,
+        symbol="GBPUSD",
+        type="sell",
+        volume=0.23,
+        open_price=1.36437,
+        current_price=1.36404,
+        sl=sl,
+        tp=0.0,
+        profit=7.59,
+        swap=0.0,
+        commission=0.0,
+        open_time=datetime(2026, 8, 24, 13, 30, tzinfo=timezone.utc),
+        comment="",
+        magic=0,
+    )
+
+
+class _ClienteConPosiciones(_FakeClient):
+    def __init__(self, posiciones) -> None:
+        super().__init__()
+        self._posiciones = posiciones
+
+    def positions(self):
+        return self._posiciones
+
+
+def _worker_con(tmp_path: Path, posiciones, acepta: bool):
+    class _Emitter(_FakeEmitter):
+        def emit(self, event) -> bool:  # noqa: ANN001
+            self.events.append(event.event)
+            return acepta or not event.event.startswith("position.")
+
+    worker = _worker(tmp_path, _ClienteConPosiciones(posiciones))
+    worker.emitter = _Emitter()  # type: ignore[assignment]
+    return worker
+
+
+def test_position_opened_rechazada_se_reintenta(tmp_path: Path) -> None:
+    """El caso real: el Core devuelve 200 y falla al guardar en
+    posiciones_abiertas. Sin reintento, la posición desaparecía del libro del
+    Core hasta el siguiente arranque del Worker."""
+    worker = _worker_con(tmp_path, [_pos(9457323)], acepta=False)
+
+    worker._poll_positions()
+    assert 9457323 not in worker._positions  # no se da por conocida
+
+    worker._poll_positions()
+    assert worker.emitter.events.count("position.opened") == 2  # reemitida
+
+
+def test_position_opened_aceptada_no_se_repite(tmp_path: Path) -> None:
+    worker = _worker_con(tmp_path, [_pos(9457323)], acepta=True)
+
+    worker._poll_positions()
+    worker._poll_positions()
+
+    assert worker.emitter.events.count("position.opened") == 1
+    assert 9457323 in worker._positions
+
+
+def test_position_updated_rechazada_conserva_el_estado_anterior(tmp_path: Path) -> None:
+    """Si el cambio no entra, el poll siguiente lo vuelve a detectar."""
+    posiciones = [_pos(9457323)]
+    worker = _worker_con(tmp_path, posiciones, acepta=True)
+    worker._poll_positions()
+
+    # Ahora el Core deja de aceptar y la posición cambia de stop loss.
+    worker.emitter.emit = lambda event: (  # type: ignore[method-assign]
+        worker.emitter.events.append(event.event) or False
+    ) if event.event.startswith("position.") else True
+    posiciones[0] = _pos(9457323, sl=1.36425)
+
+    worker._poll_positions()
+    assert worker._positions[9457323].sl == 0.0  # se conserva el anterior
+
+    worker._poll_positions()
+    assert worker.emitter.events.count("position.updated") == 2
+
+
+def test_position_closed_rechazada_se_reintenta(tmp_path: Path) -> None:
+    posiciones = [_pos(9457323)]
+    worker = _worker_con(tmp_path, posiciones, acepta=True)
+    worker._poll_positions()
+
+    worker.emitter.emit = lambda event: (  # type: ignore[method-assign]
+        worker.emitter.events.append(event.event) or False
+    ) if event.event.startswith("position.") else True
+    posiciones.clear()  # la posición se cierra en MT5
+
+    worker._poll_positions()
+    assert 9457323 in worker._positions  # sigue "abierta" para nosotros
+
+    worker._poll_positions()
+    assert worker.emitter.events.count("position.closed") == 2

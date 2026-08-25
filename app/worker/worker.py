@@ -190,9 +190,15 @@ class Worker:
         # Snapshot inicial de posiciones abiertas (sin position.opened de más:
         # sí emitimos opened para que el Core tenga el libro actual).
         for pos in self.client.positions():
-            self._positions[pos.ticket] = pos
             self._remember_sl_tp(pos)
-            self._emit("position.opened", position_to_event_dict(pos))
+            if self._emit("position.opened", position_to_event_dict(pos)):
+                self._positions[pos.ticket] = pos
+            else:
+                # Sin registrarla, el primer poll la reemite.
+                logger.warning(
+                    "position.opened %s no aceptada al arrancar; se reintentará",
+                    pos.ticket,
+                )
         self._poll_account(force=True)
 
     def _loop(self) -> None:
@@ -220,23 +226,51 @@ class Worker:
             time.sleep(0.25)
 
     def _poll_positions(self) -> None:
-        current_list = self.client.positions()
-        current = {p.ticket: p for p in current_list}
+        """Libro de posiciones, con reintento de lo que el Core no acepte.
+
+        Una posición solo se da por conocida si su evento entró. Si el Core lo
+        rechaza, se conserva el estado ANTERIOR: el siguiente poll vuelve a
+        ver la diferencia y lo reemite. Sin esto, un rechazo hacía desaparecer
+        la posición del libro del Core hasta el siguiente arranque del Worker.
+        """
+        current = {p.ticket: p for p in self.client.positions()}
+        previous = self._positions
+        known: dict[int, PositionSnapshot] = {}
 
         for ticket, pos in current.items():
             self._remember_sl_tp(pos)
-            prev = self._positions.get(ticket)
+            prev = previous.get(ticket)
             if prev is None:
-                self._emit("position.opened", position_to_event_dict(pos))
+                if self._emit("position.opened", position_to_event_dict(pos)):
+                    known[ticket] = pos
+                else:
+                    logger.warning(
+                        "position.opened %s no aceptada; se reintentará", ticket
+                    )
             elif prev.fingerprint() != pos.fingerprint():
-                self._emit("position.updated", position_to_event_dict(pos))
+                if self._emit("position.updated", position_to_event_dict(pos)):
+                    known[ticket] = pos
+                else:
+                    known[ticket] = prev  # el cambio sigue pendiente
+                    logger.warning(
+                        "position.updated %s no aceptada; se reintentará", ticket
+                    )
+            else:
+                known[ticket] = pos
 
-        for ticket, prev in list(self._positions.items()):
-            if ticket not in current:
-                self._emit("position.closed", position_to_event_dict(prev))
-                self._pending_closed.add(ticket)
+        for ticket, prev in previous.items():
+            if ticket in current:
+                continue
+            if not self._emit("position.closed", position_to_event_dict(prev)):
+                # Sigue abierta para nosotros: el próximo poll la ve cerrarse
+                # otra vez y reemite.
+                known[ticket] = prev
+                logger.warning(
+                    "position.closed %s no aceptada; se reintentará", ticket
+                )
+            self._pending_closed.add(ticket)
 
-        self._positions = current
+        self._positions = known
 
     def _poll_history(self) -> None:
         deals = self._pull_deals()
