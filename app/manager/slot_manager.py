@@ -55,6 +55,7 @@ class SlotManager:
         self.slots: dict[str, SlotState] = {}
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task[None] | None = None
+        self._assignments_path = self.settings.data_dir / "slots.json"
 
     async def start(self) -> None:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -64,8 +65,14 @@ class SlotManager:
             path = self.slot_dir(slot_id)
             path.mkdir(parents=True, exist_ok=True)
             self.slots[slot_id] = SlotState(slot_id=slot_id)
+        restored = self._restore_assignments()
         self._watch_task = asyncio.create_task(self._watch_workers(), name="slot-watch")
-        logger.info("pool listo: %s slots en %s", len(self.slots), self.settings.terminals_root)
+        logger.info(
+            "pool listo: %s slots en %s%s",
+            len(self.slots),
+            self.settings.terminals_root,
+            f"; {restored} cuenta(s) recuperadas" if restored else "",
+        )
 
     async def shutdown(self) -> None:
         if self._watch_task:
@@ -133,6 +140,7 @@ class SlotManager:
             state.restart_count = 0
             state.touch()
             self._spawn(state)
+            self._save_assignments()
             return state
 
     async def disconnect(
@@ -162,6 +170,7 @@ class SlotManager:
             # Liberar el slot para reutilizarlo.
             freed = state.slot_id
             state.reset_assignment()
+            self._save_assignments()
             logger.info("%s liberado", freed)
             return self.slots[freed]
 
@@ -202,6 +211,75 @@ class SlotManager:
         state.worker_pid = pid
         state.status = SlotStatus.CONNECTING
         state.touch()
+
+    def _save_assignments(self) -> None:
+        """Guarda qué cuenta ocupa cada slot, para sobrevivir a un reinicio.
+
+        Sin esto, reiniciar el Manager deja al Core creyendo que hay cuentas
+        conectadas mientras aquí no hay ninguna: dejan de llegar datos y nadie
+        se entera. El password va cifrado con Fernet, igual que en memoria.
+        """
+        payload = {
+            "slots": [
+                {
+                    "slot_id": state.slot_id,
+                    "account_id": state.account_id,
+                    "mt5_login": state.mt5_login,
+                    "mt5_server": state.mt5_server,
+                    "investor": state.investor,
+                    "password_encrypted": state.password_encrypted,
+                }
+                for state in self.slots.values()
+                if state.account_id and state.password_encrypted
+            ]
+        }
+        try:
+            self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+            self._assignments_path.write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            logger.exception("no se pudo guardar %s", self._assignments_path)
+
+    def _restore_assignments(self) -> int:
+        """Relanza los Workers de las cuentas que estaban asignadas."""
+        if not self._assignments_path.is_file():
+            return 0
+        try:
+            payload = json.loads(self._assignments_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("no se pudo leer %s", self._assignments_path)
+            return 0
+
+        restored = 0
+        for item in payload.get("slots", []):
+            slot_id = str(item.get("slot_id") or "")
+            state = self.slots.get(slot_id)
+            if state is None or not item.get("account_id"):
+                continue
+            state.account_id = str(item["account_id"])
+            state.mt5_login = int(item.get("mt5_login") or 0)
+            state.mt5_server = str(item.get("mt5_server") or "")
+            state.investor = bool(item.get("investor", True))
+            state.password_encrypted = item.get("password_encrypted")
+            try:
+                self._spawn(state)
+            except Exception as exc:
+                # FERNET_KEY cambiada, terminal ausente... La cuenta queda en
+                # error a la vista en /slots, no en silencio.
+                state.status = SlotStatus.ERROR
+                state.last_error = f"no se pudo recuperar tras el reinicio: {exc}"
+                state.touch()
+                logger.error("%s no recuperado: %s", slot_id, exc)
+                continue
+            logger.info(
+                "%s recuperado: cuenta %s (login %s)",
+                slot_id,
+                state.account_id,
+                state.mt5_login,
+            )
+            restored += 1
+        return restored
 
     def _read_runtime(self, slot_id: str) -> dict:
         path = self.slot_dir(slot_id) / "slot_runtime.json"
