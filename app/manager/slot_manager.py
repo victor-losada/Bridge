@@ -102,6 +102,7 @@ class SlotManager:
         for state in self.slots.values():
             item = state.public_dict()
             item["terminal_ready"] = self.terminal_ready(state.slot_id)
+            item["broker"] = self.slot_broker(state.slot_id)
             out.append(item)
         return out
 
@@ -133,7 +134,7 @@ class SlotManager:
                     f"account_id {account_id} ya está en {existing.slot_id}"
                 )
 
-            state = self._pick_slot(slot_id)
+            state = self._pick_slot(slot_id, mt5_server)
             if not self.terminal_ready(state.slot_id):
                 raise SlotManagerError(
                     f"{state.slot_id} no tiene terminal64.exe. "
@@ -192,15 +193,53 @@ class SlotManager:
             self._spawn(state)
             return state
 
-    def _pick_slot(self, slot_id: str | None) -> SlotState:
+    def slot_broker(self, slot_id: str) -> str | None:
+        """Bróker con el que se configuró el terminal de este slot."""
+        marker = self.slot_dir(slot_id) / "slot_broker.txt"
+        if not marker.is_file():
+            return None
+        try:
+            return marker.read_text(encoding="utf-8").strip() or None
+        except Exception:
+            return None
+
+    def _pick_slot(self, slot_id: str | None, mt5_server: str = "") -> SlotState:
+        """Elige slot, prefiriendo uno cuyo terminal conozca ese bróker.
+
+        Un terminal clonado solo arranca sin diálogos si recibe una cuenta del
+        mismo bróker con el que se configuró la plantilla: si tiene que cambiar
+        de bróker, MT5 pide la contraseña por pantalla y el terminal se queda
+        bloqueado (`-10005 IPC timeout`). Por eso cada slot lleva anotado su
+        bróker (`slot_broker.txt`, lo escribe provision_slots --server).
+        """
         if slot_id:
             state = self.get_slot(slot_id)
             if state.status not in {SlotStatus.FREE, SlotStatus.DISCONNECTED, SlotStatus.ERROR}:
                 raise SlotManagerError(f"{slot_id} no está libre (status={state.status})")
             return state
-        for state in self.slots.values():
-            if state.status == SlotStatus.FREE and self.terminal_ready(state.slot_id):
-                return state
+
+        libres = [
+            state
+            for state in self.slots.values()
+            if state.status == SlotStatus.FREE and self.terminal_ready(state.slot_id)
+        ]
+        if mt5_server:
+            propios = [s for s in libres if self.slot_broker(s.slot_id) == mt5_server]
+            if propios:
+                return propios[0]
+            sin_marcar = [s for s in libres if self.slot_broker(s.slot_id) is None]
+            if sin_marcar:
+                return sin_marcar[0]
+            if libres:
+                logger.warning(
+                    "no hay slot libre de %s; se usa %s, configurado para %s: "
+                    "el terminal puede pedir la contraseña por pantalla",
+                    mt5_server,
+                    libres[0].slot_id,
+                    self.slot_broker(libres[0].slot_id),
+                )
+        if libres:
+            return libres[0]
         for state in self.slots.values():
             if state.status == SlotStatus.FREE:
                 return state

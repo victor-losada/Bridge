@@ -189,6 +189,29 @@ Es idempotente: un slot que ya tiene `terminal64.exe` se omite, así que se
 puede relanzar para ampliar el pool sin tocar los que están conectados.
 `--force` lo rehace y **borra su contenido**.
 
+**Una plantilla por bróker.** Un terminal clonado solo arranca sin diálogos si
+recibe una cuenta **del mismo bróker** con el que se configuró la plantilla. Si
+tiene que cambiar de bróker, MT5 pide la contraseña por pantalla, el terminal
+se queda esperando un clic y `initialize` muere con `-10005 IPC timeout`.
+
+Así que se prepara una plantilla por bróker y se reparten los slots, marcando
+cada uno con su servidor:
+
+```bat
+python -m app.tools.provision_slots --template C:\MT5-plantilla-nys ^
+    --count 8  --server NYSMarketsLtd-trade
+python -m app.tools.provision_slots --template C:\MT5-plantilla-exness ^
+    --count 7 --first 9 --server Exness-MT5Trial11
+```
+
+`--server` deja un `slot_broker.txt` en el slot, y el Manager usa esa marca
+para asignar cada cuenta a un slot de su bróker. Un slot sin marca sirve para
+cualquiera (los pools antiguos siguen funcionando igual). Si no queda ninguno
+del bróker pedido, se usa otro y queda avisado en el log — probablemente
+acabará pidiendo la contraseña por pantalla.
+
+El bróker de cada slot se ve en `GET /slots`, campo `broker`.
+
 **Cuentas de otro bróker.** La plantilla lleva dentro la sesión del bróker con
 el que se configuró. Si el slot recibe una cuenta de un bróker distinto, el
 terminal se desconecta y se reconecta contra el servidor nuevo, y **en ese

@@ -28,6 +28,65 @@ def _line(titulo: str) -> None:
     print(f"\n--- {titulo} " + "-" * max(0, 60 - len(titulo)))
 
 
+def probe_one_step(
+    exe: Path,
+    *,
+    login: int,
+    password: str,
+    server: str,
+    init_timeout_ms: int,
+) -> int:
+    """Arranca el terminal YA con las credenciales, en una sola llamada.
+
+    Es la vía que evitaría tener una plantilla por bróker: el terminal nace
+    sabiendo a qué cuenta conectarse, así que no tiene por qué enseñar ni el
+    asistente de cuenta ni el diálogo de contraseña.
+
+    Ejecutar con el terminal de ese slot CERRADO, o la prueba no vale.
+    """
+    if mt5 is None:
+        print("El paquete MetaTrader5 no está instalado (solo funciona en Windows).")
+        return 2
+
+    print(f"Paquete MetaTrader5 : {mt5.__version__}")
+    print(f"Terminal            : {exe}")
+    print(f"Cuenta              : {login} en {server}")
+
+    _line("initialize CON credenciales (un solo paso)")
+    inicio = time.time()
+    ok = mt5.initialize(
+        path=str(exe),
+        login=int(login),
+        password=password,
+        server=server,
+        timeout=init_timeout_ms,
+        portable=True,
+    )
+    print(f"initialize -> {ok}  {mt5.last_error()}  ({time.time() - inicio:.1f} s)")
+
+    if not ok:
+        print(
+            "\nNo funcionó. Mira si el terminal ha abierto alguna ventana "
+            "esperando un clic."
+        )
+        return 1
+
+    cuenta = mt5.account_info()
+    if cuenta is None:
+        print(f"account_info vacío: {mt5.last_error()}")
+        mt5.shutdown()
+        return 1
+    print(f"dentro: login={cuenta.login} server={cuenta.server} balance={cuenta.balance}")
+    correcto = int(cuenta.login) == int(login)
+    print(
+        "\nFUNCIONA: el terminal arrancó y entró en la cuenta sin diálogos."
+        if correcto
+        else f"\nOJO: entró en {cuenta.login}, no en {login}."
+    )
+    mt5.shutdown()
+    return 0 if correcto else 1
+
+
 def probe(
     exe: Path,
     *,
@@ -133,13 +192,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--login-timeout-ms", type=int, default=180_000, help="En MILIsegundos."
     )
+    parser.add_argument(
+        "--one-step",
+        action="store_true",
+        help=(
+            "Arranca el terminal pasándole las credenciales al initialize, en "
+            "vez de lanzarlo y luego hacer login. Necesita --login, --password "
+            "y --server, y que el terminal de ese slot esté CERRADO."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.login is not None and not args.server:
         parser.error("--login necesita también --server")
+    if args.one_step and args.login is None:
+        parser.error("--one-step necesita --login, --password y --server")
+
+    exe = args.terminals_root / args.slot / "terminal64.exe"
+    if args.one_step:
+        if not exe.is_file():
+            print(f"No existe {exe}")
+            return 2
+        return probe_one_step(
+            exe,
+            login=args.login,
+            password=args.password,
+            server=args.server,
+            init_timeout_ms=args.init_timeout_ms,
+        )
 
     return probe(
-        args.terminals_root / args.slot / "terminal64.exe",
+        exe,
         login=args.login,
         password=args.password,
         server=args.server,
