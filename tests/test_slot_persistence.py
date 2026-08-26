@@ -8,6 +8,7 @@ nada que desvincular.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -191,3 +192,36 @@ async def test_los_workers_no_arrancan_todos_a_la_vez(tmp_path: Path) -> None:
     assert len(spawned) == 3
     if reiniciado._watch_task:
         reiniciado._watch_task.cancel()
+
+
+async def test_el_watchdog_no_relanza_lo_que_espera_turno(tmp_path: Path) -> None:  # noqa: E501
+    """Un slot en cola de recuperación no está caído: está esperando.
+
+    Sin esto, el watchdog lo veía sin proceso, lo daba por muerto y lo
+    arrancaba en paralelo con la recuperación: dos terminales del mismo slot
+    lanzándose y matándose entre ellos.
+    """
+    spawned: list = []
+    manager = await _manager(tmp_path, spawned)
+    for uuid, login in [("a", 203395), ("b", 198812585), ("c", 198812927)]:
+        await manager.connect(
+            account_id=uuid, mt5_login=login, mt5_password="x", mt5_server="S"
+        )
+
+    settings = _settings(tmp_path)
+    settings.worker_spawn_stagger_sec = 5  # los últimos siguen en cola
+    reiniciado = SlotManager(settings)
+    reiniciado.proc.start_worker = lambda **kw: 4242  # type: ignore[method-assign]
+    reiniciado.proc.is_running = lambda slot_id: False  # type: ignore[method-assign]
+    reiniciado.terminal_ready = lambda slot_id: True  # type: ignore[method-assign]
+    await reiniciado.start()
+    await asyncio.sleep(0.05)  # deja arrancar al primero
+
+    assert reiniciado._pending_restore == {"Slot-02", "Slot-03"}
+    # El watchdog no debe tocarlos aunque no tengan proceso vivo.
+    for slot_id in ("Slot-02", "Slot-03"):
+        assert reiniciado.slots[slot_id].restart_count == 0
+
+    for task in (reiniciado._restore_task, reiniciado._watch_task):
+        if task:
+            task.cancel()
