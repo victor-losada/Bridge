@@ -189,49 +189,27 @@ Es idempotente: un slot que ya tiene `terminal64.exe` se omite, así que se
 puede relanzar para ampliar el pool sin tocar los que están conectados.
 `--force` lo rehace y **borra su contenido**.
 
-**Una plantilla por bróker.** Un terminal clonado solo arranca sin diálogos si
-recibe una cuenta **del mismo bróker** con el que se configuró la plantilla. Si
-tiene que cambiar de bróker, MT5 pide la contraseña por pantalla, el terminal
-se queda esperando un clic y `initialize` muere con `-10005 IPC timeout`.
+**Un terminal recién clonado sirve para cualquier bróker.** El Worker arranca
+el terminal pasándole las credenciales al propio `initialize()`, así que nace
+sabiendo a qué cuenta conectarse y no enseña el asistente de cuenta ni el
+diálogo de contraseña. Un terminal parado en un diálogo no atiende al canal
+IPC: eso es lo que producía los `-10005 IPC timeout` que parecían de red o de
+credenciales.
 
-Así que se prepara una plantilla por bróker y se reparten los slots, marcando
-cada uno con su servidor:
+Medido en un slot virgen: entra en **4,6 segundos**, contra los minutos que
+tardaba en fallar el arranque en dos pasos. No hace falta preparar nada por
+bróker ni entrar a mano en ningún slot, lo cual importa porque los brókers de
+los clientes no se conocen de antemano.
 
-```bat
-python -m app.tools.provision_slots --template C:\MT5-plantilla-nys ^
-    --count 8  --server NYSMarketsLtd-trade
-python -m app.tools.provision_slots --template C:\MT5-plantilla-exness ^
-    --count 7 --first 9 --server Exness-MT5Trial11
-```
+Si por lo que sea ese arranque falla, el Worker cae al camino antiguo: lanzar
+el terminal, engancharse y hacer el login aparte, con reintentos que toleran
+que MT5 tire el canal al cambiar de bróker.
 
-`--server` deja un `slot_broker.txt` en el slot, y el Manager usa esa marca
-para asignar cada cuenta a un slot de su bróker. Un slot sin marca sirve para
-cualquiera (los pools antiguos siguen funcionando igual). Si no queda ninguno
-del bróker pedido, se usa otro y queda avisado en el log — probablemente
-acabará pidiendo la contraseña por pantalla.
-
-El bróker de cada slot se ve en `GET /slots`, campo `broker`.
-
-**Cuentas de otro bróker.** La plantilla lleva dentro la sesión del bróker con
-el que se configuró. Si el slot recibe una cuenta de un bróker distinto, el
-terminal se desconecta y se reconecta contra el servidor nuevo, y **en ese
-corte MT5 tira el canal IPC**: `login()` devuelve `-10005` al instante aunque
-el terminal sí acabe entrando (se ve en el título de su ventana). Reintentar
-el login sobre ese canal muerto falla siempre.
-
-Por eso, ante un `-10005`, el Worker espera `MT5_REATTACH_WAIT_SEC`, rehace el
-IPC y le pregunta al terminal qué cuenta tiene dentro: si ya es la pedida, el
-login había funcionado. Si trabajas siempre con los mismos brókers, una
-plantilla por bróker (`--template terminals/_plantilla_exness`) evita el
-cambio y la primera conexión es directa.
-
-Al ampliar, sube también `SLOT_COUNT` en el `.env` y reinicia el Manager.
-
-**Límite real de una máquina.** Cada terminal MT5 ocupa del orden de 150-300
-MB de RAM y su propio proceso. 20 slots son unos 4-6 GB; 100 no caben en una
-máquina normal (20-30 GB solo de terminales, más disco). A partir de unas
-pocas decenas de cuentas hay que repartir en varias máquinas, cada una con su
-Bridge Manager, y que el Core reparta las cuentas entre ellas.
+**Afinidad de bróker (opcional).** `provision_slots --server` deja un
+`slot_broker.txt` en cada slot y el Manager prefiere asignar cada cuenta a un
+slot de su bróker; el bróker se ve en `GET /slots`. Con el arranque de arriba
+ya no es necesario — un slot sin marca vale para cualquier bróker — pero sigue
+disponible por si algún día conviene dedicar slots.
 
 ## 8. Reinicios del Manager
 

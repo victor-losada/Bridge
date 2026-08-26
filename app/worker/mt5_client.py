@@ -116,48 +116,13 @@ class MT5Client:
         exe = self._resolve_terminal_exe()
         logger.info("initialize portable path=%s login=%s server=%s", exe, login, server)
 
-        # initialize(login=...) en un solo paso suele dar -10005 IPC timeout:
-        # el terminal aún no tiene el pipe listo. Arrancamos /portable, luego
-        # attach, luego login.
         try:
             mt5.shutdown()
         except Exception:
             pass
-        time.sleep(0.5)
-        self._restart_portable_terminal(exe)
 
-        last_err: Any = None
-        attached = False
-        for portable in (True, False):
-            ok = mt5.initialize(
-                path=str(exe),
-                timeout=self.timeout_ms,
-                portable=portable,
-            )
-            if ok:
-                logger.info("mt5.initialize ok portable=%s", portable)
-                attached = True
-                break
-            last_err = mt5.last_error()
-            logger.warning("mt5.initialize portable=%s falló: %s", portable, last_err)
-            try:
-                mt5.shutdown()
-            except Exception:
-                pass
-            time.sleep(1.0)
-
-        if not attached:
-            raise MT5ConnectionError(f"mt5.initialize falló: {last_err}")
-
-        if not self._wait_terminal_ipc(max(40.0, self.timeout_ms / 1000.0)):
-            err = mt5.last_error()
-            mt5.shutdown()
-            raise MT5ConnectionError(f"IPC no listo tras initialize: {err}")
-
-        if not self._login_with_patience(exe, login, password, server):
-            err = mt5.last_error()
-            mt5.shutdown()
-            raise MT5ConnectionError(f"mt5.login falló: {err}")
+        if not self._initialize_with_credentials(exe, login, password, server):
+            self._initialize_then_login(exe, login, password, server)
 
         info = mt5.account_info()
         if info is None:
@@ -178,6 +143,91 @@ class MT5Client:
             info.name,
             info.server,
         )
+
+    def _initialize_with_credentials(
+        self, exe: Path, login: int, password: str, server: str
+    ) -> bool:
+        """Arranca el terminal YA con las credenciales, en una sola llamada.
+
+        Es la vía buena, y la única que funciona en un terminal recién clonado:
+        el terminal nace sabiendo a qué cuenta conectarse, así que no enseña el
+        asistente de cuenta ni el diálogo de contraseña. Un terminal parado en
+        un diálogo no atiende al canal IPC, y eso es lo que producía los
+        `-10005 IPC timeout` que parecían de red o de credenciales.
+
+        Además evita depender de qué cuenta quedó guardada en el terminal, así
+        que cualquier slot sirve para cualquier bróker, incluido uno que la
+        máquina no haya visto nunca.
+        """
+        for intento in (1, 2):
+            if mt5.initialize(
+                path=str(exe),
+                login=int(login),
+                password=password,
+                server=server,
+                timeout=self.timeout_ms,
+                portable=True,
+            ):
+                logger.info("mt5.initialize ok con credenciales (intento %s)", intento)
+                return True
+
+            logger.warning(
+                "mt5.initialize con credenciales falló (intento %s): %s",
+                intento,
+                mt5.last_error(),
+            )
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            if intento == 1:
+                # Un terminal de este slot colgado de un arranque anterior
+                # impide el attach: se limpia y se reintenta una vez.
+                _kill_slot_terminals(str(exe.parent.resolve()).lower())
+                time.sleep(2.0)
+        return False
+
+    def _initialize_then_login(
+        self, exe: Path, login: int, password: str, server: str
+    ) -> None:
+        """Camino largo: lanzar el terminal, engancharse y luego hacer login.
+
+        Solo se usa si el arranque con credenciales no funcionó. Es más lento y
+        depende del estado guardado del terminal, pero cubre los casos raros.
+        """
+        logger.info("probando el arranque en dos pasos")
+        self._restart_portable_terminal(exe)
+
+        last_err: Any = None
+        attached = False
+        for portable in (True, False):
+            if mt5.initialize(path=str(exe), timeout=self.timeout_ms, portable=portable):
+                logger.info("mt5.initialize ok portable=%s", portable)
+                attached = True
+                break
+            last_err = mt5.last_error()
+            logger.warning("mt5.initialize portable=%s falló: %s", portable, last_err)
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+        if not attached:
+            raise MT5ConnectionError(
+                f"mt5.initialize falló: {last_err}. Si el terminal ha abierto "
+                "una ventana esperando un clic, ese es el motivo."
+            )
+
+        if not self._wait_terminal_ipc(max(40.0, self.timeout_ms / 1000.0)):
+            err = mt5.last_error()
+            mt5.shutdown()
+            raise MT5ConnectionError(f"IPC no listo tras initialize: {err}")
+
+        if not self._login_with_patience(exe, login, password, server):
+            err = mt5.last_error()
+            mt5.shutdown()
+            raise MT5ConnectionError(f"mt5.login falló: {err}")
 
     def _login_with_patience(
         self, exe: Path, login: int, password: str, server: str
