@@ -228,6 +228,13 @@ Si una cuenta no se puede recuperar (se cambió `FERNET_KEY`, desapareció el
 terminal del slot), ese slot queda en `error` con el motivo en `last_error`,
 visible en `/slots`. Nunca en silencio.
 
+**Los Workers arrancan de uno en uno**, con `WORKER_SPAWN_STAGGER_SEC` de
+margen (25 s por defecto). Varios terminales MT5 levantando a la vez se ahogan
+—cada uno sincroniza cientos de símbolos y compite por CPU y red— y el
+`initialize` muere con `-10005 IPC timeout`. Con tres cuentas, la primera
+entraba y las otras dos no levantaban nunca. Recuperar N cuentas tarda por
+tanto unos N × 25 s; el Manager responde con normalidad mientras tanto.
+
 ## 9. Contrato de identidad de la cuenta
 
 El `account_id` que el Core manda en `/accounts/connect` es **opaco para el

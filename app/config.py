@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Lifecycle
     worker_restart_max: int = 5
     worker_restart_backoff_sec: float = 5.0
+    # Margen entre el arranque de un Worker y el siguiente. Varios terminales
+    # MT5 levantando a la vez se ahogan y mueren con -10005 IPC timeout.
+    worker_spawn_stagger_sec: float = 25.0
     login_retry_max: int = 4
     login_retry_backoff_sec: float = 8.0
     shutdown_timeout_sec: float = 12.0

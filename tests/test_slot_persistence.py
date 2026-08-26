@@ -32,12 +32,16 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 async def _manager(tmp_path: Path, spawned: list, settings=None) -> SlotManager:
-    manager = SlotManager(settings or _settings(tmp_path))
+    settings = settings or _settings(tmp_path)
+    settings.worker_spawn_stagger_sec = 0  # sin esperas en los tests
+    manager = SlotManager(settings)
     manager.proc.start_worker = lambda **kw: (  # type: ignore[method-assign]
         spawned.append(kw) or 4242
     )
     manager.terminal_ready = lambda slot_id: True  # type: ignore[method-assign]
     await manager.start()
+    if manager._restore_task:
+        await manager._restore_task  # la recuperación va en segundo plano
     if manager._watch_task:
         manager._watch_task.cancel()
     return manager
@@ -148,3 +152,42 @@ async def test_el_password_no_se_guarda_en_claro(tmp_path: Path) -> None:
     guardado = (manager.settings.data_dir / "slots.json").read_text(encoding="utf-8")
     assert "password-en-claro" not in guardado
     assert json.loads(guardado)["slots"][0]["mt5_login"] == 203395
+
+
+async def test_los_workers_no_arrancan_todos_a_la_vez(tmp_path: Path) -> None:
+    """Tres terminales MT5 levantando a la vez se ahogan entre ellos.
+
+    Visto en producción: al recuperar tres cuentas de golpe, la primera
+    entraba y las otras dos morían con -10005 IPC timeout en el initialize.
+    """
+    import asyncio
+
+    spawned: list = []
+    manager = await _manager(tmp_path, spawned)
+    for i, (uuid, login) in enumerate(
+        [("a", 203395), ("b", 198812585), ("c", 198812927)]
+    ):
+        await manager.connect(
+            account_id=uuid, mt5_login=login, mt5_password="x", mt5_server="S"
+        )
+    assert len(spawned) == 3
+
+    # Reinicio con margen entre arranques.
+    settings = _settings(tmp_path)
+    settings.worker_spawn_stagger_sec = 0.05
+    spawned.clear()
+    reiniciado = SlotManager(settings)
+    reiniciado.proc.start_worker = lambda **kw: (  # type: ignore[method-assign]
+        spawned.append(kw) or 4242
+    )
+    reiniciado.terminal_ready = lambda slot_id: True  # type: ignore[method-assign]
+    await reiniciado.start()
+
+    # El primero sale enseguida; los demás esperan su turno.
+    await asyncio.sleep(0.01)
+    assert len(spawned) == 1
+
+    await reiniciado._restore_task
+    assert len(spawned) == 3
+    if reiniciado._watch_task:
+        reiniciado._watch_task.cancel()

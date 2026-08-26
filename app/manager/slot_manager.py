@@ -55,6 +55,7 @@ class SlotManager:
         self.slots: dict[str, SlotState] = {}
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task[None] | None = None
+        self._restore_task: asyncio.Task[None] | None = None
         self._assignments_path = self.settings.data_dir / "slots.json"
 
     async def start(self) -> None:
@@ -65,16 +66,22 @@ class SlotManager:
             path = self.slot_dir(slot_id)
             path.mkdir(parents=True, exist_ok=True)
             self.slots[slot_id] = SlotState(slot_id=slot_id)
-        restored = self._restore_assignments()
+        pendientes = self._load_assignments()
+        if pendientes:
+            self._restore_task = asyncio.create_task(
+                self._restore_workers(pendientes), name="slot-restore"
+            )
         self._watch_task = asyncio.create_task(self._watch_workers(), name="slot-watch")
         logger.info(
             "pool listo: %s slots en %s%s",
             len(self.slots),
             self.settings.terminals_root,
-            f"; {restored} cuenta(s) recuperadas" if restored else "",
+            f"; recuperando {len(pendientes)} cuenta(s)" if pendientes else "",
         )
 
     async def shutdown(self) -> None:
+        if self._restore_task:
+            self._restore_task.cancel()
         if self._watch_task:
             self._watch_task.cancel()
         paths = {sid: self.slot_dir(sid) for sid in self.slots}
@@ -241,17 +248,17 @@ class SlotManager:
         except Exception:
             logger.exception("no se pudo guardar %s", self._assignments_path)
 
-    def _restore_assignments(self) -> int:
-        """Relanza los Workers de las cuentas que estaban asignadas."""
+    def _load_assignments(self) -> list[SlotState]:
+        """Lee slots.json y deja los slots asignados, sin arrancar nada."""
         if not self._assignments_path.is_file():
-            return 0
+            return []
         try:
             payload = json.loads(self._assignments_path.read_text(encoding="utf-8"))
         except Exception:
             logger.exception("no se pudo leer %s", self._assignments_path)
-            return 0
+            return []
 
-        restored = 0
+        pendientes: list[SlotState] = []
         for item in payload.get("slots", []):
             slot_id = str(item.get("slot_id") or "")
             state = self.slots.get(slot_id)
@@ -262,24 +269,40 @@ class SlotManager:
             state.mt5_server = str(item.get("mt5_server") or "")
             state.investor = bool(item.get("investor", True))
             state.password_encrypted = item.get("password_encrypted")
-            try:
-                self._spawn(state)
-            except Exception as exc:
-                # FERNET_KEY cambiada, terminal ausente... La cuenta queda en
-                # error a la vista en /slots, no en silencio.
-                state.status = SlotStatus.ERROR
-                state.last_error = f"no se pudo recuperar tras el reinicio: {exc}"
-                state.touch()
-                logger.error("%s no recuperado: %s", slot_id, exc)
-                continue
-            logger.info(
-                "%s recuperado: cuenta %s (login %s)",
-                slot_id,
-                state.account_id,
-                state.mt5_login,
-            )
-            restored += 1
-        return restored
+            state.status = SlotStatus.CONNECTING
+            state.touch()
+            pendientes.append(state)
+        return pendientes
+
+    async def _restore_workers(self, pendientes: list[SlotState]) -> None:
+        """Relanza los Workers de uno en uno, con margen entre ellos.
+
+        Arrancar varios terminales MT5 a la vez los ahoga: cada uno sincroniza
+        cientos de símbolos y compite por CPU y red, y el `initialize` muere
+        con -10005 IPC timeout. Visto con tres cuentas: la primera entraba y
+        las otras dos no levantaban nunca.
+        """
+        espera = max(0.0, self.settings.worker_spawn_stagger_sec)
+        for i, state in enumerate(pendientes):
+            if i and espera:
+                await asyncio.sleep(espera)
+            async with self._lock:
+                try:
+                    self._spawn(state)
+                except Exception as exc:
+                    # FERNET_KEY cambiada, terminal ausente... La cuenta queda
+                    # en error a la vista en /slots, no en silencio.
+                    state.status = SlotStatus.ERROR
+                    state.last_error = f"no se pudo recuperar tras el reinicio: {exc}"
+                    state.touch()
+                    logger.error("%s no recuperado: %s", state.slot_id, exc)
+                    continue
+                logger.info(
+                    "%s recuperado: cuenta %s (login %s)",
+                    state.slot_id,
+                    state.account_id,
+                    state.mt5_login,
+                )
 
     def _read_runtime(self, slot_id: str) -> dict:
         path = self.slot_dir(slot_id) / "slot_runtime.json"
@@ -342,8 +365,12 @@ class SlotManager:
                     to_restart.append(state.slot_id)
             if to_restart:
                 await asyncio.sleep(self.settings.worker_restart_backoff_sec)
-                async with self._lock:
-                    for slot_id in to_restart:
+                for i, slot_id in enumerate(to_restart):
+                    # Igual que al recuperar: de uno en uno, o los terminales
+                    # se ahogan entre ellos.
+                    if i and self.settings.worker_spawn_stagger_sec:
+                        await asyncio.sleep(self.settings.worker_spawn_stagger_sec)
+                    async with self._lock:
                         state = self.slots[slot_id]
                         if not state.account_id:
                             continue
