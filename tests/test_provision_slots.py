@@ -121,3 +121,83 @@ async def test_desconectar_una_cuenta_que_no_esta_no_es_error(tmp_path: Path) ->
     manager._watch_task.cancel()
 
     assert await manager.disconnect(account_id="uuid-que-no-esta") is None
+
+
+# --- Afinidad de bróker ------------------------------------------------------
+# Un clon solo arranca sin diálogos si recibe una cuenta del mismo bróker con
+# el que se configuró la plantilla. Si tiene que cambiar, MT5 pide la
+# contraseña por pantalla y el terminal se bloquea (-10005 IPC timeout).
+
+def test_el_clon_queda_marcado_con_su_broker(tmp_path: Path) -> None:
+    root = tmp_path / "terminals"
+    provision(_plantilla(tmp_path), root, 2, server="Exness-MT5Trial11")
+
+    marca = (root / "Slot-01" / "slot_broker.txt").read_text(encoding="utf-8")
+    assert marca == "Exness-MT5Trial11"
+
+
+async def test_cada_cuenta_va_a_un_slot_de_su_broker(tmp_path: Path) -> None:
+    from app.config import Settings
+    from app.manager.slot_manager import SlotManager
+
+    plantilla = _plantilla(tmp_path)
+    root = tmp_path / "terminals"
+    provision(plantilla, root, 2, server="NYSMarketsLtd-trade")
+    provision(plantilla, root, 2, first=3, server="Exness-MT5Trial11")
+
+    settings = Settings(
+        bridge_api_key="x" * 16,
+        core_api_key="y" * 8,
+        fernet_key="Ky1DFHTvPX2CjJKcgTLdmB2fF2ZQK5Xz3mFvMHVGLJU=",
+        slot_count=4,
+        terminals_root=root,
+        data_dir=tmp_path / "data",
+        worker_spawn_stagger_sec=0,
+    )
+    manager = SlotManager(settings)
+    manager.proc.start_worker = lambda **kw: 1  # type: ignore[method-assign]
+    await manager.start()
+    if manager._watch_task:
+        manager._watch_task.cancel()
+
+    exness = await manager.connect(
+        account_id="a", mt5_login=1, mt5_password="x",
+        mt5_server="Exness-MT5Trial11",
+    )
+    nys = await manager.connect(
+        account_id="b", mt5_login=2, mt5_password="x",
+        mt5_server="NYSMarketsLtd-trade",
+    )
+
+    # La de Exness NO puede caer en Slot-01/02, que son de NYSMarkets.
+    assert exness.slot_id in {"Slot-03", "Slot-04"}
+    assert nys.slot_id in {"Slot-01", "Slot-02"}
+
+
+async def test_sin_marcar_sirve_para_cualquier_broker(tmp_path: Path) -> None:
+    """Los pools existentes, sin marca, siguen funcionando igual."""
+    from app.config import Settings
+    from app.manager.slot_manager import SlotManager
+
+    root = tmp_path / "terminals"
+    provision(_plantilla(tmp_path), root, 2)  # sin --server
+
+    settings = Settings(
+        bridge_api_key="x" * 16,
+        core_api_key="y" * 8,
+        fernet_key="Ky1DFHTvPX2CjJKcgTLdmB2fF2ZQK5Xz3mFvMHVGLJU=",
+        slot_count=2,
+        terminals_root=root,
+        data_dir=tmp_path / "data",
+        worker_spawn_stagger_sec=0,
+    )
+    manager = SlotManager(settings)
+    manager.proc.start_worker = lambda **kw: 1  # type: ignore[method-assign]
+    await manager.start()
+    if manager._watch_task:
+        manager._watch_task.cancel()
+
+    estado = await manager.connect(
+        account_id="a", mt5_login=1, mt5_password="x", mt5_server="Loquesea"
+    )
+    assert estado.slot_id == "Slot-01"

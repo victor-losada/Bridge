@@ -51,6 +51,11 @@ def _dir_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
+#: Marca qué bróker conoce el terminal de un slot. Un clon solo arranca sin
+#: diálogos si recibe una cuenta del mismo bróker que la plantilla.
+BROKER_MARKER = "slot_broker.txt"
+
+
 def provision(
     template: Path,
     terminals_root: Path,
@@ -59,6 +64,7 @@ def provision(
     first: int = 1,
     force: bool = False,
     dry_run: bool = False,
+    server: str = "",
 ) -> tuple[list[str], list[str]]:
     """Clona la plantilla en Slot-XX. Devuelve (creados, omitidos)."""
     template = template.resolve()
@@ -84,8 +90,10 @@ def provision(
         if destination.exists():
             shutil.rmtree(destination)
         shutil.copytree(template, destination, ignore=_ignore)
+        if server:
+            (destination / BROKER_MARKER).write_text(server, encoding="utf-8")
         created.append(slot_id)
-        print(f"  {slot_id} listo")
+        print(f"  {slot_id} listo{f' [{server}]' if server else ''}")
 
     return created, skipped
 
@@ -118,6 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Enseña qué haría, sin copiar nada."
     )
+    parser.add_argument(
+        "--server",
+        default="",
+        help=(
+            "Servidor MT5 con el que se configuró la plantilla, p.ej. "
+            "Exness-MT5Trial11. Se anota en el slot para que el Manager le "
+            "asigne cuentas de ese bróker."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.count < 1:
@@ -136,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         first=args.first,
         force=args.force,
         dry_run=args.dry_run,
+        server=args.server,
     )
 
     print()
