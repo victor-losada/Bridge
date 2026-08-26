@@ -159,3 +159,69 @@ def test_si_entro_otra_cuenta_no_lo_da_por_bueno(monkeypatch, tmp_path) -> None:
     )
 
     assert ok is False
+
+
+# --- Arranque con credenciales en un solo paso ------------------------------
+# Medido en un slot recién clonado: initialize con credenciales entra en 4,6 s
+# y sin diálogos, donde el camino en dos pasos moría con -10005 tras minutos.
+
+
+class _FakeMT5UnPaso:
+    """Terminal virgen: solo arranca si le dan las credenciales al initialize."""
+
+    def __init__(self, login_real: int = 203395, acepta_un_paso: bool = True) -> None:
+        self.login_real = login_real
+        self.acepta_un_paso = acepta_un_paso
+        self.con_credenciales = 0
+        self.sin_credenciales = 0
+        self.logins = 0
+
+    def initialize(self, path=None, timeout=None, portable=None, **kw):
+        if "login" in kw:
+            self.con_credenciales += 1
+            return self.acepta_un_paso
+        self.sin_credenciales += 1
+        return False  # terminal virgen: se queda en el asistente
+
+    def last_error(self):
+        return IPC_TIMEOUT
+
+    def login(self, *a, **kw):
+        self.logins += 1
+        return False
+
+    def shutdown(self):
+        pass
+
+    def account_info(self):
+        return _CuentaMT5(self.login_real)
+
+    def terminal_info(self):
+        return None
+
+
+def test_arranca_con_credenciales_sin_dar_el_rodeo(monkeypatch, tmp_path) -> None:
+    fake = _FakeMT5UnPaso()
+    monkeypatch.setattr(mt5_module, "mt5", fake)
+    client = MT5Client(tmp_path)
+
+    assert client._initialize_with_credentials(
+        tmp_path / "terminal64.exe", 203395, "x", "NYSMarketsLtd-trade"
+    ) is True
+
+    assert fake.con_credenciales == 1
+    assert fake.sin_credenciales == 0  # no hizo falta el camino largo
+    assert fake.logins == 0            # ni un login aparte
+
+
+def test_si_falla_reintenta_una_vez_tras_limpiar(monkeypatch, tmp_path) -> None:
+    """Un terminal colgado de un arranque anterior impide el attach."""
+    fake = _FakeMT5UnPaso(acepta_un_paso=False)
+    monkeypatch.setattr(mt5_module, "mt5", fake)
+    monkeypatch.setattr(mt5_module, "_kill_slot_terminals", lambda root: None)
+    client = MT5Client(tmp_path)
+
+    assert client._initialize_with_credentials(
+        tmp_path / "terminal64.exe", 203395, "x", "S"
+    ) is False
+    assert fake.con_credenciales == 2  # lo intenta dos veces, no más
