@@ -56,6 +56,9 @@ class SlotManager:
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task[None] | None = None
         self._restore_task: asyncio.Task[None] | None = None
+        # Slots asignados que todavía esperan su turno de arranque. El
+        # watchdog los vería "sin proceso" y creería que se han caído.
+        self._pending_restore: set[str] = set()
         self._assignments_path = self.settings.data_dir / "slots.json"
 
     async def start(self) -> None:
@@ -271,6 +274,7 @@ class SlotManager:
             state.password_encrypted = item.get("password_encrypted")
             state.status = SlotStatus.CONNECTING
             state.touch()
+            self._pending_restore.add(state.slot_id)
             pendientes.append(state)
         return pendientes
 
@@ -297,6 +301,8 @@ class SlotManager:
                     state.touch()
                     logger.error("%s no recuperado: %s", state.slot_id, exc)
                     continue
+                finally:
+                    self._pending_restore.discard(state.slot_id)
                 logger.info(
                     "%s recuperado: cuenta %s (login %s)",
                     state.slot_id,
@@ -322,6 +328,9 @@ class SlotManager:
             async with self._lock:
                 for state in self.slots.values():
                     if state.status == SlotStatus.FREE or not state.account_id:
+                        continue
+                    if state.slot_id in self._pending_restore:
+                        # Aún no le toca arrancar: no está caído, está en cola.
                         continue
                     running = self.proc.is_running(state.slot_id)
                     if running:
