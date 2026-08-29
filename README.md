@@ -236,7 +236,28 @@ margen (25 s por defecto). Varios terminales MT5 levantando a la vez se ahogan
 entraba y las otras dos no levantaban nunca. Recuperar N cuentas tarda por
 tanto unos N × 25 s; el Manager responde con normalidad mientras tanto.
 
-## 9. Contrato de identidad de la cuenta
+## 9. Copias de seguridad
+
+Del Bridge solo hay tres cosas irremplazables, y ninguna pesa:
+
+| Qué | Por qué |
+|-----|---------|
+| `.env` | Contiene `FERNET_KEY`. **Sin ella `slots.json` es ilegible** y hay que reconectar cada cuenta pidiendo su contraseña otra vez. |
+| `data/slots.json` | Qué cuenta ocupa cada slot. |
+| La plantilla de terminal | Las listas de servidores de los brókers, que se añaden a mano una por una. |
+
+Lo demás —`bases`, `logs`, los propios slots— lo regenera MT5 solo.
+
+```bat
+python -m app.tools.backup --dest D:\copias
+python -m app.tools.backup --dest D:\copias --template C:\MT5-plantilla
+```
+
+**La `FERNET_KEY` debe estar además en un gestor de contraseñas**, no solo en
+el servidor y su copia: es el único fallo sin vuelta atrás. Y la copia
+contiene esa clave en claro, así que guárdala como guardarías una contraseña.
+
+## 10. Contrato de identidad de la cuenta
 
 El `account_id` que el Core manda en `/accounts/connect` es **opaco para el
 Bridge**: no se interpreta ni se transforma, solo se devuelve tal cual en el
@@ -261,7 +282,7 @@ el cuerpo de la respuesta. El Bridge lo detecta aunque el status sea 200 (ver
 `core_rejection` en `app/worker/event_emitter.py`), lo cuenta en
 `emit.rejected` y lo deja en `last_error` de `/slots`.
 
-## 10. "La cuenta conecta pero no cargan los stats"
+## 11. "La cuenta conecta pero no cargan los stats"
 
 `POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
 Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los
