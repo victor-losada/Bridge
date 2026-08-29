@@ -419,7 +419,7 @@ class Worker:
         if not self._state_path.is_file():
             return
         try:
-            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+            payload = json.loads(self._state_path.read_text(encoding="utf-8-sig"))
             self.matcher.load_persist(payload)
             logger.info("estado local cargado: %s", self._state_path)
         except Exception:
