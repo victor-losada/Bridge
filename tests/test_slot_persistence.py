@@ -225,3 +225,26 @@ async def test_el_watchdog_no_relanza_lo_que_espera_turno(tmp_path: Path) -> Non
     for task in (reiniciado._restore_task, reiniciado._watch_task):
         if task:
             task.cancel()
+
+
+async def test_un_slots_json_con_bom_se_lee_igual(tmp_path: Path) -> None:
+    """Windows mete un BOM con facilidad y el fichero se edita a mano.
+
+    Visto en producción: tras editar slots.json con PowerShell
+    (Set-Content -Encoding UTF8), el Manager arrancaba sin recuperar ninguna
+    cuenta por un 'Unexpected UTF-8 BOM'.
+    """
+    spawned: list = []
+    manager = await _manager(tmp_path, spawned)
+    await manager.connect(
+        account_id="uuid-nys", mt5_login=203395, mt5_password="x", mt5_server="S"
+    )
+
+    ruta = manager.settings.data_dir / "slots.json"
+    ruta.write_text("﻿" + ruta.read_text(encoding="utf-8"), encoding="utf-8")
+
+    spawned.clear()
+    reiniciado = await _manager(tmp_path, spawned)
+
+    assert len(spawned) == 1
+    assert reiniciado.find_by_account("uuid-nys") is not None

@@ -295,7 +295,11 @@ class SlotManager:
         if not self._assignments_path.is_file():
             return []
         try:
-            payload = json.loads(self._assignments_path.read_text(encoding="utf-8"))
+            # utf-8-sig: Windows mete un BOM con facilidad (PowerShell,
+            # Bloc de notas) y este fichero se edita a mano.
+            payload = json.loads(
+                self._assignments_path.read_text(encoding="utf-8-sig")
+            )
         except Exception:
             logger.exception("no se pudo leer %s", self._assignments_path)
             return []
@@ -354,7 +358,7 @@ class SlotManager:
         if not path.is_file():
             return {}
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
