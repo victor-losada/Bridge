@@ -12,6 +12,7 @@ Lo demás —bases, logs, los propios slots— lo regenera MT5 solo.
 
     python -m app.tools.backup --dest D:\\copias
     python -m app.tools.backup --dest D:\\copias --template C:\\MT5-plantilla
+    python -m app.tools.backup --dest D:\\copias --keep 14
 
 OJO: la copia contiene la FERNET_KEY en claro. Guárdala donde guardarías una
 contraseña, no en una carpeta compartida.
@@ -43,6 +44,26 @@ def _ignora_plantilla(directory: str, names: list[str]) -> set[str]:
         elif lowered.endswith(".log"):
             fuera.add(name)
     return fuera
+
+
+#: Nombre de las carpetas que crea este script. Solo se poda lo que encaje:
+#: --dest puede apuntar a una carpeta con más cosas dentro.
+PATRON = "bridge-backup-*"
+
+
+def poda(dest: Path, keep: int) -> list[Path]:
+    """Deja solo las `keep` copias más recientes. Devuelve las borradas.
+
+    La marca de tiempo es AAAAMMDD-HHMMSS, así que ordenar por nombre ordena
+    por fecha sin tocar el disco.
+    """
+    if keep <= 0:
+        return []
+    copias = sorted((d for d in dest.glob(PATRON) if d.is_dir()), key=lambda d: d.name)
+    sobran = copias[:-keep]
+    for vieja in sobran:
+        shutil.rmtree(vieja)
+    return sobran
 
 
 def backup(
@@ -95,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
         "--root", type=Path, default=Path("."), help="Raíz del proyecto (por defecto .)"
     )
     parser.add_argument(
+        "--keep",
+        type=int,
+        default=0,
+        help="Conservar solo las N copias mas recientes (0 = no borrar ninguna).",
+    )
+    parser.add_argument(
         "--template",
         type=Path,
         default=None,
@@ -106,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"{args.root.resolve()} no parece la raíz del Bridge")
 
     destino = backup(args.root, args.dest, template=args.template)
+
+    for vieja in poda(args.dest, args.keep):
+        print(f"  borrada   {vieja.name}")
 
     total = sum(f.stat().st_size for f in destino.rglob("*") if f.is_file())
     print()

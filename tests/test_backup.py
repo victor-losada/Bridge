@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.tools.backup import backup
+from app.tools.backup import backup, poda
 
 
 def _proyecto(base: Path) -> Path:
@@ -65,3 +65,47 @@ def test_cada_copia_va_a_su_carpeta(tmp_path: Path) -> None:
 
     assert una != otra
     assert una.is_dir() and otra.is_dir()
+
+
+def test_poda_deja_solo_las_mas_recientes(tmp_path: Path) -> None:
+    """Una copia diaria que nunca borra acaba llenando el disco."""
+    root = _proyecto(tmp_path)
+    copias = tmp_path / "copias"
+    for marca in ("20260827-0300", "20260828-0300", "20260829-0300", "20260830-0300"):
+        backup(root, copias, marca=marca)
+
+    borradas = poda(copias, keep=2)
+
+    quedan = sorted(d.name for d in copias.iterdir())
+    assert quedan == ["bridge-backup-20260829-0300", "bridge-backup-20260830-0300"]
+    assert [d.name for d in borradas] == [
+        "bridge-backup-20260827-0300",
+        "bridge-backup-20260828-0300",
+    ]
+
+
+def test_poda_con_keep_cero_no_borra_nada(tmp_path: Path) -> None:
+    """El valor por defecto: quien no pide retencion no pierde copias."""
+    root = _proyecto(tmp_path)
+    copias = tmp_path / "copias"
+    backup(root, copias, marca="20260830-0300")
+
+    assert poda(copias, keep=0) == []
+    assert len(list(copias.iterdir())) == 1
+
+
+def test_poda_no_toca_lo_que_no_ha_creado_el_backup(tmp_path: Path) -> None:
+    """--dest puede ser una carpeta compartida con otras cosas dentro."""
+    root = _proyecto(tmp_path)
+    copias = tmp_path / "copias"
+    backup(root, copias, marca="20260829-0300")
+    backup(root, copias, marca="20260830-0300")
+    ajeno = copias / "facturas"
+    ajeno.mkdir()
+    (copias / "notas.txt").write_text("mias", encoding="utf-8")
+
+    poda(copias, keep=1)
+
+    assert ajeno.is_dir()
+    assert (copias / "notas.txt").is_file()
+    assert not (copias / "bridge-backup-20260829-0300").exists()

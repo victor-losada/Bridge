@@ -251,13 +251,70 @@ Lo demás —`bases`, `logs`, los propios slots— lo regenera MT5 solo.
 ```bat
 python -m app.tools.backup --dest D:\copias
 python -m app.tools.backup --dest D:\copias --template C:\MT5-plantilla
+python -m app.tools.backup --dest D:\copias --keep 14
+```
+
+`--keep N` conserva solo las N copias más recientes y borra el resto. Solo toca
+carpetas `bridge-backup-*`, así que `--dest` puede ser una carpeta con más cosas
+dentro. Sin `--keep` no se borra nada.
+
+Para dejarlo diario y desatendido:
+
+```powershell
+.\scripts\install-backup-task.ps1 -Destino D:\copias-bridge -Hora 03:00 -Conservar 14
 ```
 
 **La `FERNET_KEY` debe estar además en un gestor de contraseñas**, no solo en
 el servidor y su copia: es el único fallo sin vuelta atrás. Y la copia
-contiene esa clave en claro, así que guárdala como guardarías una contraseña.
+contiene esa clave en claro, así que guárdala como guardarías una contraseña —
+en una carpeta local del servidor, nunca en una unidad de red ni sincronizada.
 
-## 10. Contrato de identidad de la cuenta
+## 10. Arranque automático en el servidor
+
+En un servidor el Bridge tiene que sobrevivir a un reinicio sin que nadie entre
+por RDP. Se registra como **tarea programada al iniciar sesión**:
+
+```powershell
+.\scripts\install-bridge-task.ps1
+Start-ScheduledTask -TaskName "Bridge Manager"
+Get-Content .\logs\bridge-20260831.log -Tail 40 -Wait
+```
+
+### Por qué una tarea y no un servicio de Windows
+
+Un servicio corre en la *sesión 0*, que no tiene escritorio. MT5 es una
+aplicación gráfica y MetaQuotes no soporta ese modo; como el Bridge lanza un
+terminal por cuenta, necesitamos una sesión interactiva de verdad.
+
+El precio es que hace falta **inicio de sesión automático**, o tras un reinicio
+no habrá ninguna sesión y la tarea no disparará. La forma correcta de
+configurarlo es [Autologon de Sysinternals](https://learn.microsoft.com/sysinternals/downloads/autologon),
+que guarda la contraseña como secreto LSA cifrado en vez de dejarla en texto
+plano en el registro, que es lo que hace el método manual:
+
+```powershell
+.\Autologon.exe <usuario> <equipo> <contraseña>
+```
+
+Esto implica que quien tenga acceso físico o por consola al servidor entra al
+escritorio sin credenciales. Es aceptable en un servidor dedicado con el RDP
+restringido por firewall; no lo es en una máquina compartida.
+
+### Cerrar RDP sin matar la sesión
+
+Con la sesión abierta, **desconectar** (la X de la ventana de RDP) la deja viva
+y el Bridge sigue corriendo. **Cerrar sesión** la destruye y se lleva por
+delante el Bridge y todos los terminales. No uses "Cerrar sesión".
+
+## 11. Qué falta antes de exponerlo a internet
+
+| | Por qué |
+|---|---|
+| **TLS con dominio propio** | `/accounts/connect` lleva la contraseña MT5 en el cuerpo. En HTTP plano viaja legible. Let's Encrypt necesita un nombre de dominio, no vale una IP. |
+| **Firewall en el 8088** | El puerto debe aceptar solo la IP del Core. |
+| **Contraseñas de solo lectura** | Conectar con `investor: true` siempre que el bróker lo permita. |
+
+## 12. Contrato de identidad de la cuenta
 
 El `account_id` que el Core manda en `/accounts/connect` es **opaco para el
 Bridge**: no se interpreta ni se transforma, solo se devuelve tal cual en el
@@ -282,7 +339,7 @@ el cuerpo de la respuesta. El Bridge lo detecta aunque el status sea 200 (ver
 `core_rejection` en `app/worker/event_emitter.py`), lo cuenta en
 `emit.rejected` y lo deja en `last_error` de `/slots`.
 
-## 11. "La cuenta conecta pero no cargan los stats"
+## 13. "La cuenta conecta pero no cargan los stats"
 
 `POST /accounts/connect` responde `ok` en cuanto asigna el slot y lanza el
 Worker: **no** significa que el Core ya esté recibiendo datos. Los stats los
