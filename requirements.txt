@@ -6,7 +6,7 @@ httpx==0.28.1
 cryptography==44.0.2
 python-dotenv==1.1.0
 psutil==7.0.0
-# MetaTrader5 retira sus versiones antiguas de PyPI, asi que un pin exacto
-# caduca solo y rompe la instalacion en una maquina nueva. Suelo minimo +
-# tope de major: reproducible dentro de la serie 5 y a prueba de retiradas.
-MetaTrader5>=5.0.5488,<6
+# El wheel de MetaTrader5 es especifico de cada version de Python y esta
+# release solo publica cp311. Con otro interprete pip dira que la version
+# 'no existe' cuando lo que falta es el wheel: el venv va con Python 3.11.
+MetaTrader5==5.0.4874
