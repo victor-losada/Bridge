@@ -14,3 +14,5 @@ terminals/Slot-*/**
 
 slot_runtime.json
 worker_state.json
+
+logs/
