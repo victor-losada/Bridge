@@ -492,19 +492,55 @@ class Worker:
         return folder / "worker_state.json"
 
     def _load_persist(self) -> None:
+        """Carga los trades ya emitidos, pero solo si son de ESTA cuenta.
+
+        El fichero vive en la carpeta del slot, y un slot se reutiliza entre
+        cuentas. Sin comprobar de quién es, la cuenta que entra hereda los
+        position_id de la anterior y da por enviados trades que nunca mandó.
+        Los position_id los numera cada servidor de bróker por su cuenta, así
+        que chocar es cuestión de tiempo, y el resultado sería un trade real
+        que no llega al Core sin un solo error en el log.
+
+        Ante la duda se empieza de cero: repetir un trade lo resuelve el
+        Core con su clave única; perderlo no lo resuelve nadie.
+        """
         if not self._state_path.is_file():
             return
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8-sig"))
-            self.matcher.load_persist(payload)
-            logger.info("estado local cargado: %s", self._state_path)
         except Exception:
             logger.exception("no se pudo leer %s", self._state_path)
+            return
+
+        dueño = payload.get("account_id") if isinstance(payload, dict) else None
+        if dueño is None:
+            # Formato viejo, sin dueño: no se puede saber de quién es.
+            logger.info("estado local sin cuenta asociada; se ignora")
+            return
+        if dueño != self.account_id:
+            logger.warning(
+                "estado local de otra cuenta (%s, este worker es %s); se ignora",
+                dueño,
+                self.account_id,
+            )
+            return
+
+        try:
+            self.matcher.load_persist(payload.get("matcher") or {})
+            logger.info("estado local cargado: %s", self._state_path)
+        except Exception:
+            logger.exception("no se pudo aplicar %s", self._state_path)
 
     def _save_persist(self) -> None:
         try:
             self._state_path.write_text(
-                json.dumps(self.matcher.dump_persist()),
+                json.dumps(
+                    {
+                        "account_id": self.account_id,
+                        "mt5_login": self.mt5_login,
+                        "matcher": self.matcher.dump_persist(),
+                    }
+                ),
                 encoding="utf-8",
             )
         except Exception:

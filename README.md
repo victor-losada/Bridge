@@ -368,6 +368,22 @@ Con la sesión abierta, **desconectar** (la X de la ventana de RDP) la deja viva
 y el Bridge sigue corriendo. **Cerrar sesión** la destruye y se lleva por
 delante el Bridge y todos los terminales. No uses "Cerrar sesión".
 
+### El estado local del slot
+
+Cada slot guarda en `worker_state.json` los `position_id` que ya emitió, para
+no duplicar `trade.closed` si el Worker se reinicia. Dos reglas:
+
+- **Lleva escrito de qué cuenta es.** Un slot se reutiliza entre cuentas, y los
+  `position_id` los numera cada servidor de bróker por su cuenta: heredar el
+  estado del ocupante anterior daría por enviados trades que nunca se mandaron,
+  sin ningún error en el log. Si el dueño no coincide, se ignora.
+- **Conectar una cuenta lo borra.** Conectar es una orden explícita del Core,
+  no un reinicio. Si no se borrara, `REPLAY_HISTORY_ON_CONNECT=true` no
+  reenviaría nada: el matcher creería que ya emitió todo.
+
+Ante la duda siempre se empieza de cero. Repetir un trade lo resuelve el Core
+con su clave única (`bridge_position_id`); perderlo no lo resuelve nadie.
+
 ## 11. Qué falta antes de exponerlo a internet
 
 | | Por qué |

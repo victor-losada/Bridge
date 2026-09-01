@@ -462,3 +462,67 @@ def test_un_fallo_leyendo_las_ordenes_no_impide_el_replay(tmp_path: Path) -> Non
     cerrados = [list(e.values())[0] for e in emitidos if "trade.closed" in e]
     assert len(cerrados) == 1
     assert cerrados[0]["initialStopLoss"] is None
+
+
+# --- Estado local: de quién es -----------------------------------------------
+#
+# worker_state.json guarda los position_id ya emitidos y vive en la carpeta del
+# SLOT, que se reutiliza entre cuentas. Sin comprobar el dueño, la cuenta que
+# entra hereda los ids de la anterior y da por enviados trades que nunca mandó.
+# Los position_id los numera cada servidor de bróker, así que chocan.
+
+
+def _con_estado(tmp_path: Path, payload: dict) -> Worker:
+    import json as _json
+
+    (tmp_path / "worker_state.json").write_text(
+        _json.dumps(payload), encoding="utf-8"
+    )
+    return _worker(tmp_path, _FakeClient())
+
+
+def test_el_estado_de_otra_cuenta_se_ignora(tmp_path: Path) -> None:
+    """Heredarlo silenciaría trades reales del cliente que entra."""
+    worker = _con_estado(
+        tmp_path,
+        {"account_id": "otra-cuenta", "mt5_login": 111, "matcher": {"emitted": [42]}},
+    )
+
+    worker._load_persist()
+
+    assert worker.matcher.dump_persist().get("emitted", []) == []
+
+
+def test_el_estado_propio_se_carga(tmp_path: Path) -> None:
+    worker = _worker(tmp_path, _FakeClient())
+    worker.matcher.mark_emitted([42])
+    worker._save_persist()
+
+    otro = _worker(tmp_path, _FakeClient())
+    otro._load_persist()
+
+    assert 42 in otro.matcher.dump_persist().get("emitted", [])
+
+
+def test_un_estado_sin_dueno_se_ignora(tmp_path: Path) -> None:
+    """Formato viejo: no se puede saber de quién es, así que no vale.
+
+    Repetir un trade lo arregla el Core con su clave única; perderlo no lo
+    arregla nadie.
+    """
+    worker = _con_estado(tmp_path, {"emitted": [42]})
+
+    worker._load_persist()
+
+    assert worker.matcher.dump_persist().get("emitted", []) == []
+
+
+def test_el_estado_guardado_dice_de_quien_es(tmp_path: Path) -> None:
+    import json as _json
+
+    worker = _worker(tmp_path, _FakeClient())
+    worker._save_persist()
+
+    guardado = _json.loads((tmp_path / "worker_state.json").read_text(encoding="utf-8"))
+    assert guardado["account_id"] == "acc-1"
+    assert guardado["mt5_login"] == 999
