@@ -67,6 +67,8 @@ class ProcessManager:
                 "MT5_LOGIN_ATTEMPTS": str(self.settings.mt5_login_attempts),
                 "MT5_REATTACH_WAIT_SEC": str(self.settings.mt5_reattach_wait_sec),
                 "EMIT_POSITION_EVENTS": str(self.settings.emit_position_events).lower(),
+                "EMIT_TRADE_CANDLES": str(self.settings.emit_trade_candles).lower(),
+                "TRADE_CANDLES_COUNT": str(self.settings.trade_candles_count),
                 "LOGIN_RETRY_MAX": str(self.settings.login_retry_max),
                 "LOGIN_RETRY_BACKOFF_SEC": str(self.settings.login_retry_backoff_sec),
                 "PYTHONUNBUFFERED": "1",

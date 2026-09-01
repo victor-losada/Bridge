@@ -25,6 +25,17 @@ try:
 except ImportError:  # pragma: no cover - solo se instala en Windows con MT5
     mt5 = None  # type: ignore[assignment]
 
+#: Nombres de timeframe que aceptamos. La constante de MT5 se busca en tiempo
+#: de uso porque el paquete no existe fuera de Windows.
+TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+
+
+def mt5_timeframe(name: str) -> Any:
+    """Constante TIMEFRAME_* de MT5 para un nombre nuestro."""
+    if name not in TIMEFRAMES:
+        raise ValueError(f"timeframe desconocido: {name}")
+    return getattr(mt5, f"TIMEFRAME_{name}")
+
 
 class MT5NotInstalledError(RuntimeError):
     pass
@@ -406,6 +417,26 @@ class MT5Client:
                 logger.warning("history_orders_get None: %s", err)
             return []
         return orders
+
+    def copy_rates(
+        self, symbol: str, timeframe: str, date_from: datetime, date_to: datetime
+    ) -> Sequence[Any]:
+        """Velas de un simbolo en un rango. Vacio si el simbolo no existe.
+
+        El simbolo tiene que estar en el Market Watch para que MT5 sirva su
+        historial, y un simbolo que solo aparece en trades viejos puede no
+        estarlo: por eso se selecciona antes.
+        """
+        self._ensure()
+        tf = mt5_timeframe(timeframe)
+        mt5.symbol_select(symbol, True)
+        rates = mt5.copy_rates_range(symbol, tf, date_from, date_to)
+        if rates is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                logger.warning("copy_rates_range None para %s: %s", symbol, err)
+            return []
+        return rates
 
     def _ensure(self) -> None:
         if mt5 is None or not self._connected:

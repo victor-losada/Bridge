@@ -185,6 +185,41 @@ Los dos pueden ser `null`, y eso significa exactamente lo que parece: la
 operación no tenía stop. El Core no debe inventarse uno ni tratar el `null`
 como 0 — un 0 sería un precio.
 
+### `trade.candles` — velas para dibujar la operación
+
+El Core guarda trades pero no tiene histórico de precios. Con
+`EMIT_TRADE_CANDLES=true`, después de cada `trade.closed` **aceptado** el
+Worker manda un segundo evento con las velas de esa operación:
+
+```json
+{
+  "event": "trade.candles",
+  "data": {
+    "positionId": "987654321",
+    "symbol": "EURUSD",
+    "timeframe": "M15",
+    "candles": [{"time": 1756500000, "open": 1.08, "high": 1.081, "low": 1.079, "close": 1.0805}]
+  }
+}
+```
+
+`time` va en **segundos epoch UTC**, que es lo que esperan las librerías de
+gráficos (Lightweight Charts incluida). No hay que convertirlo.
+
+Por qué un evento aparte y no un campo dentro de `trade.closed`: si el Core
+rechaza las velas, la operación ya está guardada. Lo accesorio no puede poner
+en riesgo lo que importa. Por lo mismo va **apagado por defecto** — un Core
+que no conozca el evento lo rechazaría.
+
+El **timeframe se elige solo** según lo que duró la operación, para que ocupe
+unas 20 velas: un scalp de 4 minutos sale en M1 y un swing de tres días en H4.
+Se piden `TRADE_CANDLES_COUNT` velas (150 por defecto, ~8 KB) con la operación
+centrada, para que se vea de dónde venía el precio.
+
+Las velas son las del **bróker de esa cuenta**. Es la razón de sacarlas de
+aquí y no de una API externa: los precios difieren entre brókers y los
+símbolos ni siquiera se llaman igual (`EURUSD` vs `EURUSD.m`).
+
 ## 6. Probar el matcher sin MT5
 
 ```bat

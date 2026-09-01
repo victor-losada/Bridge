@@ -38,6 +38,7 @@ from app.worker.deal_matcher import (
     order_from_mt5,
     orders_by_ticket,
 )
+from app.worker import trade_candles
 from app.worker.event_emitter import EventEmitter
 from app.worker.mt5_client import (
     MT5Client,
@@ -76,6 +77,8 @@ class Worker:
         mt5_login_attempts: int = 3,
         mt5_reattach_wait_sec: float = 20.0,
         emit_position_events: bool = True,
+        emit_trade_candles: bool = False,
+        trade_candles_count: int = 150,
     ) -> None:
         self.slot_id = slot_id
         self.account_id = account_id
@@ -92,6 +95,10 @@ class Worker:
         # quieren operaciones cerradas. El seguimiento interno se mantiene
         # igual (hace falta para emparejar los cierres), solo no se emite.
         self.emit_position_events = emit_position_events
+        # Las velas de cada operación son un extra para el gráfico del Core:
+        # apagadas por defecto porque un Core que no las espere las rechaza.
+        self.emit_trade_candles = emit_trade_candles
+        self.trade_candles_count = trade_candles_count
         self.login_retry_max = login_retry_max
         self.login_retry_backoff_sec = login_retry_backoff_sec
 
@@ -363,6 +370,36 @@ class Worker:
         tp = pos.tp if pos.tp else None
         self._sl_tp[pos.ticket] = (sl, tp)
 
+    def _emit_trade_candles(self, trade) -> None:  # noqa: ANN001
+        """Velas de la operación, para que el Core pueda dibujarla.
+
+        Se llama solo con el trade ya aceptado. Cualquier fallo aquí se traga:
+        quedarse sin gráfico es un incordio, perder la operación no.
+        """
+        if not self.emit_trade_candles:
+            return
+        try:
+            tf = trade_candles.elegir_timeframe(trade.close_time - trade.open_time)
+            desde, hasta = trade_candles.ventana(
+                trade.open_time, trade.close_time, tf, self.trade_candles_count
+            )
+            rates = self.client.copy_rates(trade.symbol, tf, desde, hasta)
+            data = trade_candles.construir(
+                position_id=trade.position_id,
+                symbol=trade.symbol,
+                timeframe=tf,
+                rates=rates,
+            )
+        except Exception:  # noqa: BLE001 - el trade ya está guardado
+            logger.warning(
+                "no se pudieron leer las velas de %s", trade.position_id, exc_info=True
+            )
+            return
+        if data is None:
+            logger.info("sin velas para %s (%s)", trade.symbol, trade.position_id)
+            return
+        self._emit("trade.candles", data.model_dump())
+
     def _emit_trade(self, trade) -> None:  # noqa: ANN001
         ok = self._emit("trade.closed", trade.to_event_data().model_dump())
         if not ok:
@@ -383,6 +420,8 @@ class Worker:
             trade.volume,
             trade.profit,
         )
+        # Solo con el trade ya a salvo en el Core.
+        self._emit_trade_candles(trade)
 
     def _status(self, status: str, message: str | None = None) -> None:
         data = ConnectionStatusData(
@@ -515,5 +554,8 @@ def run_worker_from_env() -> None:
         mt5_reattach_wait_sec=float(os.environ.get("MT5_REATTACH_WAIT_SEC", "20")),
         emit_position_events=os.environ.get("EMIT_POSITION_EVENTS", "true").lower()
         not in {"0", "false", "no"},
+        emit_trade_candles=os.environ.get("EMIT_TRADE_CANDLES", "false").lower()
+        in {"1", "true", "yes"},
+        trade_candles_count=int(os.environ.get("TRADE_CANDLES_COUNT", "150")),
     )
     raise SystemExit(worker.run())

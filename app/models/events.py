@@ -91,6 +91,31 @@ class ClosedTradeData(BaseModel):
     initialTakeProfit: float | None = None
 
 
+class Candle(BaseModel):
+    """Una vela OHLC. `time` en segundos epoch UTC, que es lo que esperan las
+    librerias de graficos (Lightweight Charts entre ellas)."""
+
+    time: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class TradeCandlesData(BaseModel):
+    """Velas del entorno de un trade, para dibujarlo.
+
+    Va en un evento aparte y NO dentro de trade.closed: si el Core rechaza
+    las velas, la operacion ya esta guardada. Lo accesorio no puede poner en
+    riesgo lo que importa.
+    """
+
+    positionId: str
+    symbol: str
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    candles: list[Candle]
+
+
 class BridgeEvent(BaseModel):
     event: Literal[
         "connection.status",
@@ -99,6 +124,7 @@ class BridgeEvent(BaseModel):
         "position.updated",
         "position.closed",
         "trade.closed",
+        "trade.candles",
     ]
     account_id: str
     mt5_login: int
