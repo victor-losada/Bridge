@@ -83,3 +83,44 @@ def test_el_payload_lleva_lo_que_espera_un_grafico():
     # Segundos epoch, sin convertir: es lo que esperan las librerías.
     assert data.candles[0].time == 1000
     assert data.candles[0].high == 1.2
+
+
+class _ArrayComoNumpy(list):
+    """Se comporta como un array de numpy en lo que importa aquí.
+
+    numpy prohíbe evaluar la verdad de un array de varios elementos, así que
+    `rates or []` lanza ValueError en producción. Una lista normal no lo
+    reproduce: por eso las primeras pruebas pasaban con el fallo dentro.
+    """
+
+    def __bool__(self) -> bool:
+        raise ValueError(
+            "The truth value of an array with more than one element is ambiguous"
+        )
+
+
+def test_un_array_de_numpy_no_se_evalua_como_booleano():
+    rates = _ArrayComoNumpy(
+        [{"time": 1000, "open": 1.1, "high": 1.2, "low": 1.0, "close": 1.15}]
+    )
+
+    velas = velas_desde_mt5(rates)
+
+    assert [v.time for v in velas] == [1000]
+
+
+def test_construir_con_un_array_de_numpy():
+    rates = _ArrayComoNumpy(
+        [{"time": 1000, "open": 1.1, "high": 1.2, "low": 1.0, "close": 1.15}]
+    )
+
+    data = construir(position_id=7, symbol="EURUSD", timeframe="M5", rates=rates)
+
+    assert data is not None
+    assert len(data.candles) == 1
+
+
+def test_un_array_vacio_de_numpy_no_manda_nada():
+    assert construir(
+        position_id=7, symbol="EURUSD", timeframe="M5", rates=_ArrayComoNumpy()
+    ) is None
