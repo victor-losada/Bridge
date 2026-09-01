@@ -65,9 +65,13 @@ def velas_desde_mt5(rates: object) -> list[Candle]:
 
     `time` sale en segundos epoch, que es justo lo que esperan las librerías
     de gráficos; no se toca.
+
+    OJO con el None: un array de numpy no se puede evaluar como booleano
+    (`rates or []` revienta con "truth value ... is ambiguous"). Hay que
+    comprobarlo contra None explícitamente.
     """
     salida: list[Candle] = []
-    for r in rates or []:
+    for r in [] if rates is None else rates:  # type: ignore[union-attr]
         try:
             salida.append(
                 Candle(
