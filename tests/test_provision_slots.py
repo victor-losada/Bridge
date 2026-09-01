@@ -201,3 +201,22 @@ async def test_sin_marcar_sirve_para_cualquier_broker(tmp_path: Path) -> None:
         account_id="a", mt5_login=1, mt5_password="x", mt5_server="Loquesea"
     )
     assert estado.slot_id == "Slot-01"
+
+
+def test_un_slot_dentro_de_la_plantilla_no_se_clona(tmp_path: Path) -> None:
+    """Si la plantilla se sacó de una carpeta con slots al lado, uno se cuela.
+
+    Sin filtrarlo, cada uno de los 20 clones carga con un terminal entero
+    dentro: el desperdicio se multiplica por el tamaño del pool.
+    """
+    plantilla = _plantilla(tmp_path)
+    colado = plantilla / "Slot-04"
+    (colado / "config").mkdir(parents=True)
+    (colado / "terminal64.exe").write_text("otro terminal")
+
+    provision(plantilla, tmp_path / "terminals", count=1)
+
+    slot = tmp_path / "terminals" / "Slot-01"
+    assert not (slot / "Slot-04").exists()
+    # Y lo que sí queremos sigue estando.
+    assert (slot / "config" / "servers.dat").is_file()
