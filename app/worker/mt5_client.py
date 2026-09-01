@@ -387,6 +387,26 @@ class MT5Client:
             return []
         return deals
 
+    def history_orders(self, lookback_days: int) -> Sequence[Any]:
+        """Ordenes del lookback, para recuperar el SL/TP de apertura.
+
+        Mismo rango y misma holgura que history_deals: MT5 filtra por hora del
+        servidor del broker, no por UTC. Que no haya ordenes no es un error
+        (una cuenta sin actividad en la ventana), asi que se devuelve vacio.
+        """
+        self._ensure()
+        now = utc_now()
+        buffer = timedelta(hours=self.history_forward_buffer_hours)
+        date_from = now - timedelta(days=lookback_days) - buffer
+        date_to = now + buffer
+        orders = mt5.history_orders_get(date_from, date_to)
+        if orders is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                logger.warning("history_orders_get None: %s", err)
+            return []
+        return orders
+
     def _ensure(self) -> None:
         if mt5 is None or not self._connected:
             raise MT5ConnectionError("MT5 no inicializado")

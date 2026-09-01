@@ -84,6 +84,11 @@ class ClosedTradeData(BaseModel):
     commission: float = 0.0
     stopLoss: float | None = None
     takeProfit: float | None = None
+    #: El stop tal como estaba al abrir, antes de cualquier modificacion. Es
+    #: el que sirve para la R: si el trader mueve el stop a break-even, el
+    #: `stopLoss` de arriba ya no mide el riesgo que asumio al entrar.
+    initialStopLoss: float | None = None
+    initialTakeProfit: float | None = None
 
 
 class BridgeEvent(BaseModel):

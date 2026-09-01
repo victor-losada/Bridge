@@ -158,6 +158,33 @@ cierres nuevos.
 Al reconectar un Worker se vuelven a emitir `position.opened` de las
 posiciones aún abiertas (el Core debe hacer upsert por `positionId`).
 
+### Stop-loss: dos campos, no uno
+
+| Campo | Qué es |
+|-------|--------|
+| `stopLoss` / `takeProfit` | El **último** conocido. Recoge las modificaciones que haya hecho el trader durante la operación. |
+| `initialStopLoss` / `initialTakeProfit` | El que llevaba la **orden de apertura**, antes de tocarlo. |
+
+**Para calcular la R hay que usar `initialStopLoss`**, no `stopLoss`. Mover el
+stop a break-even es habitual, y con el stop movido el riesgo calculado sale
+distorsionado o directamente cero (división por cero).
+
+De dónde sale cada uno, en orden de preferencia:
+
+- `stopLoss`: del sondeo del libro de posiciones → del deal de entrada → de la
+  orden de apertura.
+- `initialStopLoss`: solo de la orden de apertura.
+
+Esto último importa para el **historial reconstruido**. Un trade cerrado antes
+de que el Worker existiera no tuvo ningún sondeo de posición detrás, y el campo
+`sl` de un deal viene en 0 con la mayoría de brókers: MT5 solo guarda el stop
+de forma fiable en la orden. Leer las órdenes es lo que recupera el stop de
+esos trades.
+
+Los dos pueden ser `null`, y eso significa exactamente lo que parece: la
+operación no tenía stop. El Core no debe inventarse uno ni tratar el `null`
+como 0 — un 0 sería un precio.
+
 ## 6. Probar el matcher sin MT5
 
 ```bat

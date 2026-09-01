@@ -32,7 +32,12 @@ from app.models.events import (
     ConnectionStatusData,
 )
 from app.utils import setup_logging, to_iso_z, utc_now
-from app.worker.deal_matcher import DealMatcher, deal_from_mt5
+from app.worker.deal_matcher import (
+    DealMatcher,
+    deal_from_mt5,
+    order_from_mt5,
+    orders_by_ticket,
+)
 from app.worker.event_emitter import EventEmitter
 from app.worker.mt5_client import (
     MT5Client,
@@ -282,11 +287,13 @@ class Worker:
         fresh = self.matcher.ingest(deals)
         if fresh:
             logger.info("deals nuevos: %s", len(fresh))
+        orders = self._pull_orders()
 
         # Primero intentar cerrar las posiciones que desaparecieron del libro.
         for pid in list(self._pending_closed):
             trades = self.matcher.pop_ready_trades(
                 sl_tp_by_position=self._sl_tp,
+                orders=orders,
                 only_position_id=pid,
             )
             if trades:
@@ -295,7 +302,9 @@ class Worker:
                 self._pending_closed.discard(pid)
 
         # Cierres que ocurrieron entre polls (o cuentas netting rápidas).
-        for trade in self.matcher.pop_ready_trades(sl_tp_by_position=self._sl_tp):
+        for trade in self.matcher.pop_ready_trades(
+            sl_tp_by_position=self._sl_tp, orders=orders
+        ):
             self._pending_closed.discard(trade.position_id)
             self._emit_trade(trade)  # si el Core lo rechaza, vuelve a pending
 
@@ -326,6 +335,28 @@ class Worker:
             if deal is not None:
                 parsed.append(deal)
         return parsed
+
+    def _pull_orders(self) -> dict:
+        """SL/TP de apertura por ticket de orden.
+
+        Es lo unico que recupera el stop de un trade historico: cuando el
+        Worker no estaba vivo mientras la posicion existia, nadie sondeo su
+        SL y el deal casi siempre lo trae en 0.
+
+        Un fallo aqui no puede tumbar la emision de trade.closed: sin ordenes
+        el trade sale igual, solo que sin stop.
+        """
+        try:
+            raw = self.client.history_orders(self.history_lookback_days)
+        except Exception:  # noqa: BLE001 - el trade importa mas que su stop
+            logger.warning("no se pudo leer el historial de ordenes", exc_info=True)
+            return {}
+        parsed = []
+        for item in raw:
+            order = order_from_mt5(item)
+            if order is not None:
+                parsed.append(order)
+        return orders_by_ticket(parsed)
 
     def _remember_sl_tp(self, pos: PositionSnapshot) -> None:
         sl = pos.sl if pos.sl else None
