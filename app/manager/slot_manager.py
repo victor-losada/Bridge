@@ -150,6 +150,11 @@ class SlotManager:
             state.last_error = None
             state.restart_count = 0
             state.touch()
+            # Conectar es una orden explícita del Core, no un reinicio: el
+            # estado que quede de la ocupación anterior no vale. Si no se
+            # borra, REPLAY_HISTORY_ON_CONNECT no reenvía nada porque el
+            # matcher cree que ya emitió todo.
+            self._olvidar_estado(state.slot_id)
             self._spawn(state)
             self._save_assignments()
             return state
@@ -244,6 +249,14 @@ class SlotManager:
             if state.status == SlotStatus.FREE:
                 return state
         raise SlotManagerError("no hay slots libres")
+
+    def _olvidar_estado(self, slot_id: str) -> None:
+        """Tira el worker_state.json del slot. Que no exista es lo normal."""
+        estado = self.slot_dir(slot_id) / "worker_state.json"
+        try:
+            estado.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("no se pudo borrar %s", estado, exc_info=True)
 
     def _spawn(self, state: SlotState) -> None:
         assert state.account_id and state.mt5_login and state.mt5_server
