@@ -18,6 +18,7 @@ arrastrar el estado de otro slot es justo lo que no se quiere.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -31,6 +32,12 @@ SKIP_FILES = {"slot_runtime.json", "worker_state.json"}
 
 SKIP_SUFFIXES = {".log"}
 
+# Un slot dentro de la plantilla. Pasa cuando la plantilla se saca de una
+# carpeta que ya tenia slots al lado: sin esto se clona un terminal entero
+# dentro de cada uno de los 20, y el desperdicio se multiplica por 20.
+# Una instalacion de MT5 no tiene ningun directorio con esta forma.
+SLOT_ANIDADO = re.compile(r"^slot-\d+$", re.IGNORECASE)
+
 
 def _ignore(directory: str, names: list[str]) -> set[str]:
     parent = Path(directory).name.lower()
@@ -40,7 +47,11 @@ def _ignore(directory: str, names: list[str]) -> set[str]:
         full = Path(directory) / name
         if full.is_dir():
             # 'Logs' cuelga tanto de la raíz como de MQL5/
-            if lowered in SKIP_DIRS or (parent == "mql5" and lowered == "logs"):
+            if (
+                lowered in SKIP_DIRS
+                or (parent == "mql5" and lowered == "logs")
+                or SLOT_ANIDADO.match(name)
+            ):
                 ignored.add(name)
         elif lowered in SKIP_FILES or Path(lowered).suffix in SKIP_SUFFIXES:
             ignored.add(name)
