@@ -190,7 +190,13 @@ class Worker:
         self.matcher.ingest(deals)
         already_closed = self.matcher.snapshot_closed_ids()
         if self.replay_history_on_connect:
-            trades = self.matcher.pop_ready_trades(sl_tp_by_position=self._sl_tp)
+            # Las órdenes hacen falta AQUÍ más que en ningún otro sitio: estos
+            # trades cerraron antes de que existiera este Worker, así que nadie
+            # sondeó su posición y el `sl` del deal viene en 0. La orden de
+            # apertura es su única fuente de stop.
+            trades = self.matcher.pop_ready_trades(
+                sl_tp_by_position=self._sl_tp, orders=self._pull_orders()
+            )
             for trade in trades:
                 self._emit_trade(trade)
             logger.info("replay de %s trades cerrados del lookback", len(trades))

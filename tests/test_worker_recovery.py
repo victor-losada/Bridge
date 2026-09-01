@@ -351,3 +351,114 @@ def test_sin_libro_de_abiertas_los_cierres_se_siguen_detectando(tmp_path: Path) 
     assert worker.emitter.events == []
     assert 9457323 in worker._pending_closed     # listo para emparejar el cierre
     assert worker._sl_tp.get(9457323) is not None
+
+
+# --- Replay del historial al conectar ---------------------------------------
+#
+# El fallo real: al reconectar una cuenta, los trades viejos llegaban al Core
+# con el stop en null. Las órdenes se leían en el poll periódico pero NO en el
+# replay, que es justo donde más falta hacen: esos trades cerraron antes de
+# que existiera el Worker, nadie sondeó su posición, y el `sl` del deal viene
+# en 0 con la mayoría de brókers.
+
+
+class _ClienteConHistorial(_FakeClient):
+    """Un bróker típico: el stop está en la orden, el deal lo trae en 0."""
+
+    SL_DE_LA_ORDEN = 1.07800
+
+    def history_deals(self, lookback_days: int):  # noqa: ANN201
+        abre = _Deal(ticket=11, entry=0, deal_type=0, order=500, price=1.08000)
+        cierra = _Deal(ticket=22, entry=1, deal_type=1, order=501, price=1.08400)
+        return [abre, cierra]
+
+    def history_orders(self, lookback_days: int):  # noqa: ANN201
+        return [_Orden(ticket=500, sl=self.SL_DE_LA_ORDEN, tp=1.08600)]
+
+    def positions(self):  # noqa: ANN201
+        return []
+
+    def account_info(self):  # noqa: ANN201
+        from app.worker.mt5_client import AccountSnapshot
+
+        return AccountSnapshot(
+            login=999,
+            balance=10_000.0,
+            equity=10_000.0,
+            margin=0.0,
+            free_margin=10_000.0,
+            margin_level=None,
+            profit=0.0,
+            currency="USD",
+            leverage=100,
+            name="Prueba",
+            server="Broker-Server",
+        )
+
+
+class _Deal:
+    def __init__(self, *, ticket, entry, deal_type, order, price):  # noqa: ANN001
+        self.ticket = ticket
+        self.position_id = 987654321
+        self.symbol = "EURUSD"
+        self.type = deal_type
+        self.entry = entry
+        self.volume = 0.10
+        self.price = price
+        self.profit = 4.0
+        self.swap = 0.0
+        self.commission = 0.0
+        self.time = int(datetime(2026, 8, 21, 14, 0, tzinfo=timezone.utc).timestamp())
+        self.order = order
+        self.sl = 0.0  # el bróker no lo rellena aquí
+        self.tp = 0.0
+        self.magic = 0
+        self.comment = ""
+
+
+class _Orden:
+    def __init__(self, *, ticket, sl, tp):  # noqa: ANN001
+        self.ticket = ticket
+        self.position_id = 987654321
+        self.sl = sl
+        self.tp = tp
+
+
+def _worker_con_replay(tmp_path: Path) -> Worker:
+    worker = _worker(tmp_path, _ClienteConHistorial())
+    worker.replay_history_on_connect = True
+    return worker
+
+
+def test_el_replay_recupera_el_stop_desde_la_orden(tmp_path: Path) -> None:
+    worker = _worker_con_replay(tmp_path)
+    emitidos: list[dict] = []
+    worker._emit = lambda event, data: (emitidos.append({event: data}) or True)  # type: ignore[assignment,method-assign]
+
+    worker._bootstrap_history()
+
+    cerrados = [list(e.values())[0] for e in emitidos if "trade.closed" in e]
+    assert len(cerrados) == 1
+    trade = cerrados[0]
+    assert trade["initialStopLoss"] == _ClienteConHistorial.SL_DE_LA_ORDEN
+    # Y sin nada más reciente, también es el último conocido.
+    assert trade["stopLoss"] == _ClienteConHistorial.SL_DE_LA_ORDEN
+
+
+def test_un_fallo_leyendo_las_ordenes_no_impide_el_replay(tmp_path: Path) -> None:
+    """Quedarse sin stop es un incordio; perder la operación, no."""
+
+    class _SinOrdenes(_ClienteConHistorial):
+        def history_orders(self, lookback_days: int):  # noqa: ANN201
+            raise RuntimeError("history_orders_get reventó")
+
+    worker = _worker(tmp_path, _SinOrdenes())
+    worker.replay_history_on_connect = True
+    emitidos: list[dict] = []
+    worker._emit = lambda event, data: (emitidos.append({event: data}) or True)  # type: ignore[assignment,method-assign]
+
+    worker._bootstrap_history()
+
+    cerrados = [list(e.values())[0] for e in emitidos if "trade.closed" in e]
+    assert len(cerrados) == 1
+    assert cerrados[0]["initialStopLoss"] is None
