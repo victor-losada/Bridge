@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # seguimiento interno y los trade.closed no cambian.
     emit_position_events: bool = True
 
+    # True = tras cada trade.closed aceptado, mandar tambien las velas de esa
+    # operacion en un evento trade.candles, para que el Core pueda dibujarla.
+    # Apagado por defecto: un Core que no conozca el evento lo rechazaria.
+    emit_trade_candles: bool = False
+    # Velas alrededor del trade. 150 encuadra bien la operacion sin inflar el
+    # payload (~8 KB). El timeframe se elige solo segun lo que duro el trade.
+    trade_candles_count: int = 150
+
     # Lifecycle
     worker_restart_max: int = 5
     worker_restart_backoff_sec: float = 5.0

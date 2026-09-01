@@ -103,6 +103,8 @@ class MatchedTrade:
     commission: float
     stop_loss: float | None = None
     take_profit: float | None = None
+    initial_stop_loss: float | None = None
+    initial_take_profit: float | None = None
     in_deals: list[RawDeal] = field(default_factory=list)
     out_deals: list[RawDeal] = field(default_factory=list)
 
@@ -122,7 +124,43 @@ class MatchedTrade:
             commission=round(self.commission, 2),
             stopLoss=_opt_price(self.stop_loss),
             takeProfit=_opt_price(self.take_profit),
+            initialStopLoss=_opt_price(self.initial_stop_loss),
+            initialTakeProfit=_opt_price(self.initial_take_profit),
         )
+
+
+@dataclass(slots=True)
+class RawOrder:
+    """La orden que abrió una posición, con el SL/TP que llevaba entonces.
+
+    MT5 guarda el stop de forma fiable en la ORDEN, no en el deal: el campo
+    `sl` de un deal viene en 0 con muchos brókers. Y como modificar el stop de
+    una posición viva no genera ninguna orden nueva, lo que la orden de
+    apertura lleva es el stop INICIAL, que es justamente el que sirve para
+    calcular la R de la operación.
+    """
+
+    ticket: int
+    position_id: int
+    sl: float = 0.0
+    tp: float = 0.0
+
+
+def order_from_mt5(order: object) -> RawOrder | None:
+    """Adapta un TradeOrder de MetaTrader5 (namedtuple) a RawOrder."""
+    ticket = int(getattr(order, "ticket", 0) or 0)
+    if ticket <= 0:
+        return None
+    return RawOrder(
+        ticket=ticket,
+        position_id=int(getattr(order, "position_id", 0) or 0),
+        sl=float(getattr(order, "sl", 0) or 0),
+        tp=float(getattr(order, "tp", 0) or 0),
+    )
+
+
+def orders_by_ticket(orders: Iterable[RawOrder]) -> dict[int, RawOrder]:
+    return {o.ticket: o for o in orders}
 
 
 def deal_from_mt5(deal: object) -> RawDeal | None:
@@ -192,11 +230,20 @@ def vwap(deals: Sequence[RawDeal]) -> float:
     return sum(d.price * d.volume for d in deals) / total_vol
 
 
+def _primero(*valores: float | None) -> float | None:
+    """El primer valor utilizable. Un 0.0 en MT5 significa 'sin definir'."""
+    for v in valores:
+        if v not in (None, 0.0):
+            return v
+    return None
+
+
 def match_closed_position(
     deals: Sequence[RawDeal],
     *,
     stop_loss: float | None = None,
     take_profit: float | None = None,
+    orders: dict[int, RawOrder] | None = None,
 ) -> MatchedTrade | None:
     """Construye un MatchedTrade si los deals cierran por completo la posición.
 
@@ -217,8 +264,17 @@ def match_closed_position(
     direction: Literal["buy", "sell"] = "buy" if first_in.deal_type == DEAL_TYPE_BUY else "sell"
     in_vol, _out_vol = net_volumes(market)
 
-    sl = stop_loss if stop_loss not in (None, 0.0) else _opt_price(first_in.sl)
-    tp = take_profit if take_profit not in (None, 0.0) else _opt_price(first_in.tp)
+    # El stop tal como estaba al ABRIR: la orden de entrada lo conserva aunque
+    # el trade sea historico y nadie sondeara la posicion mientras vivia.
+    apertura = (orders or {}).get(first_in.order)
+    sl_inicial = _primero(apertura.sl if apertura else None)
+    tp_inicial = _primero(apertura.tp if apertura else None)
+
+    # El ultimo conocido: lo visto en el libro de posiciones manda, porque
+    # recoge las modificaciones posteriores. Si no lo hay, se cae hacia el
+    # deal y, por ultimo, hacia la orden.
+    sl = _primero(stop_loss, first_in.sl, sl_inicial)
+    tp = _primero(take_profit, first_in.tp, tp_inicial)
 
     return MatchedTrade(
         position_id=first_in.position_id,
@@ -235,6 +291,8 @@ def match_closed_position(
         commission=sum(d.commission for d in market),
         stop_loss=sl,
         take_profit=tp,
+        initial_stop_loss=sl_inicial,
+        initial_take_profit=tp_inicial,
         in_deals=entries,
         out_deals=exits,
     )
@@ -289,6 +347,7 @@ class DealMatcher:
         self,
         *,
         sl_tp_by_position: dict[int, tuple[float | None, float | None]] | None = None,
+        orders: dict[int, RawOrder] | None = None,
         only_position_id: int | None = None,
     ) -> list[MatchedTrade]:
         """Devuelve trades cerrados aún no emitidos y los marca como emitidos."""
@@ -304,7 +363,9 @@ class DealMatcher:
                 continue
             deals = list(self._by_position.get(pid, {}).values())
             sl, tp = sl_tp_by_position.get(pid, (None, None))
-            matched = match_closed_position(deals, stop_loss=sl, take_profit=tp)
+            matched = match_closed_position(
+                deals, stop_loss=sl, take_profit=tp, orders=orders
+            )
             if matched is None:
                 continue
             self._emitted.add(pid)

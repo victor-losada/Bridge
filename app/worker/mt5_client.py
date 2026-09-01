@@ -25,6 +25,17 @@ try:
 except ImportError:  # pragma: no cover - solo se instala en Windows con MT5
     mt5 = None  # type: ignore[assignment]
 
+#: Nombres de timeframe que aceptamos. La constante de MT5 se busca en tiempo
+#: de uso porque el paquete no existe fuera de Windows.
+TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+
+
+def mt5_timeframe(name: str) -> Any:
+    """Constante TIMEFRAME_* de MT5 para un nombre nuestro."""
+    if name not in TIMEFRAMES:
+        raise ValueError(f"timeframe desconocido: {name}")
+    return getattr(mt5, f"TIMEFRAME_{name}")
+
 
 class MT5NotInstalledError(RuntimeError):
     pass
@@ -386,6 +397,46 @@ class MT5Client:
                 raise MT5ConnectionError(f"history_deals_get None: {err}")
             return []
         return deals
+
+    def history_orders(self, lookback_days: int) -> Sequence[Any]:
+        """Ordenes del lookback, para recuperar el SL/TP de apertura.
+
+        Mismo rango y misma holgura que history_deals: MT5 filtra por hora del
+        servidor del broker, no por UTC. Que no haya ordenes no es un error
+        (una cuenta sin actividad en la ventana), asi que se devuelve vacio.
+        """
+        self._ensure()
+        now = utc_now()
+        buffer = timedelta(hours=self.history_forward_buffer_hours)
+        date_from = now - timedelta(days=lookback_days) - buffer
+        date_to = now + buffer
+        orders = mt5.history_orders_get(date_from, date_to)
+        if orders is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                logger.warning("history_orders_get None: %s", err)
+            return []
+        return orders
+
+    def copy_rates(
+        self, symbol: str, timeframe: str, date_from: datetime, date_to: datetime
+    ) -> Sequence[Any]:
+        """Velas de un simbolo en un rango. Vacio si el simbolo no existe.
+
+        El simbolo tiene que estar en el Market Watch para que MT5 sirva su
+        historial, y un simbolo que solo aparece en trades viejos puede no
+        estarlo: por eso se selecciona antes.
+        """
+        self._ensure()
+        tf = mt5_timeframe(timeframe)
+        mt5.symbol_select(symbol, True)
+        rates = mt5.copy_rates_range(symbol, tf, date_from, date_to)
+        if rates is None:
+            err = mt5.last_error()
+            if err and err[0] != 1:
+                logger.warning("copy_rates_range None para %s: %s", symbol, err)
+            return []
+        return rates
 
     def _ensure(self) -> None:
         if mt5 is None or not self._connected:

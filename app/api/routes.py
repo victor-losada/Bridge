@@ -113,6 +113,19 @@ async def disconnect_account(body: DisconnectAccountRequest, request: Request) -
     return {"ok": True, "already_disconnected": False, "slot": state.public_dict()}
 
 
+@router.post("/accounts/{account_id}/disconnect", dependencies=[Depends(require_key)])
+async def disconnect_account_by_path(account_id: str, request: Request) -> dict:
+    """La misma desvinculación, con la cuenta en la ruta.
+
+    Es la forma REST que cualquiera espera y la que el Core usa. La variante
+    con cuerpo sigue siendo la canónica porque admite además `slot_id`, que
+    en una ruta no se puede expresar.
+    """
+    return await disconnect_account(
+        DisconnectAccountRequest(account_id=account_id), request
+    )
+
+
 @router.post("/slots/{slot_id}/restart", dependencies=[Depends(require_key)])
 async def restart_slot(slot_id: str, request: Request) -> dict:
     mgr = _manager(request)
